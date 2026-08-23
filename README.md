@@ -6,6 +6,11 @@ SmartNode1000 keeps your LoRAs, prompts, wildcards and resolutions where you act
 work — on the canvas. Pair a LoRA with the prompt it belongs to, save it once, and reuse
 it in every workflow. No more copy-pasting trigger words or hunting for the right strength.
 
+It does not stop at the node. A **Manage** button in the top bar opens the same tools for
+the rest of your library — LoRAs, checkpoints, workflows and wildcards — with Civitai and
+Hugging Face search, downloads that survive closing the window, and update checks for
+everything it can identify.
+
 Available in **English, 한국어, 中文** — the UI follows your ComfyUI language setting.
 
 ---
@@ -28,6 +33,20 @@ Check a box, and both go in. That's the whole idea.
 | **SN1000 Lora Theme** | Theme/preset library shared across every workflow, stored as JSON |
 | **SN1000 Lora Checklist** | Multi-select checklist stored inside the node itself |
 | **SN1000 Resolution** | Resolution picker with ratio lock and favourites |
+
+---
+
+## Panels
+
+Press **Manage** in the top bar. Each panel also opens from the node that uses it.
+
+| Panel | What it does |
+|---|---|
+| **LoRAs** | Browse by folder, favourite, read details, swap previews, delete |
+| **Checkpoints** | The same window, pointed at your checkpoints |
+| **Workflows** | Load, rename, delete — and see which ones need nodes you do not have |
+| **Wildcards** | Browse the list, then create, edit or delete wildcard files |
+| **Civitai** | Fill in model info, check for updates, find and download |
 
 ---
 
@@ -195,9 +214,119 @@ useless anywhere else.
 The download runs at the bottom of the window with a progress bar, a running size and a
 **Stop** button, so you can keep searching while it works.
 
+The type filter goes past LoRAs: checkpoints, workflows, wildcards, ControlNets, VAEs,
+upscalers, embeddings and poses search from the same box, and each lands in the folder
+ComfyUI keeps that kind in. A type SmartNode1000 has no folder for opens on Civitai
+instead of pretending to download it.
+
 Downloading needs an API key: Civitai requires one for most files.
 
 ![Finding and downloading models](https://raw.githubusercontent.com/1000Pro-1997/SmartNode1000/main/media/15-find-models.png)
+
+---
+
+### Checkpoints get the same window
+
+**Checkpoints** is the LoRA picker pointed at your checkpoint folder — same folder tree,
+same search, same favourites, same detail window. Right-click a card to fetch its info
+from Civitai, replace the preview image, show it in the folder, or delete it together
+with its sidecar files. Left-click copies the file name, because that is what you
+usually want from a checkpoint.
+
+The update check covers them too: the **My models** tab has a LoRAs / Checkpoints switch
+and both halves work the same way.
+
+---
+
+### Downloads run on the server, not in the window
+
+Every download — Civitai or Hugging Face — is queued on the ComfyUI side. Close the
+panel, go back to the graph, keep working: the queue carries on, and the **Downloads**
+tab shows what is waiting, what is running with a progress bar, and what finished this
+session.
+
+If a file needs an API key, the tab says so and sends you to the key panel instead of
+failing quietly. Some Civitai pages are set to signed-in downloads only, and no API key
+satisfies that — those offer **Open on Civitai** so you can take the file in your
+browser, which leads to the next part.
+
+---
+
+### Bring in what you downloaded in the browser
+
+**Downloaded in your browser**, at the bottom of the Downloads tab, reads your Downloads
+folder and lists the model files sitting in it. Pick one: SmartNode1000 hashes it, asks
+Civitai what it is, chooses the folder, moves it there — moves, not copies, because a
+12 GB file is not worth having twice — and writes the metadata and preview image beside
+it. The file name does not matter; `model (1).safetensors` still finds its own page.
+
+Not on Civitai? Then the file is asked instead. SmartNode1000 reads the header of the
+safetensors or GGUF — a few tens of KB, however large the file is — and tells from the
+tensor names whether it is a LoRA, a checkpoint, a UNet, a VAE or a text encoder. When
+it cannot tell, it says so and lets you pick, rather than guessing wrong.
+
+---
+
+### Your workflows, as cards you can actually read
+
+The **Workflows** panel lists everything in your ComfyUI workflows folder. A workflow has
+no preview image, so SmartNode1000 draws one — a minimap of the real node layout, taken
+straight from the JSON, for every workflow at once and without opening any of them. Drop
+your own image on a card if you would rather see the picture it makes.
+
+Each card carries the node count, the models it uses and — the one that earns the panel —
+**how many nodes it needs that are not installed here**. You learn that from the card
+instead of from a screen full of red after you load it.
+
+Click a card and it loads the way ComfyUI loads it, with its own tab and title.
+Right-click to rename, move, show in folder or delete. **Tidy up** takes the loose files
+at the top level and files them into folders by what they use.
+
+---
+
+### Workflows have new versions too — take them without losing your edits
+
+A workflow downloaded from Civitai through SmartNode1000 remembers where it came from, so
+the **Workflows** section of the My models tab can ask whether a newer version was posted.
+(Only ones downloaded here can be checked — that is when the source gets recorded.)
+
+Taking the new version does not cost you your changes. The copy you first downloaded is
+kept, and the upgrade is a three-way merge — original, your file, new release — the way
+git does it:
+
+- **the graph** — which nodes exist and how they are wired — comes from the new version,
+  because that is what you are upgrading for
+- **the values** — prompts, LoRA names and strengths, checkpoint, steps, CFG, seed,
+  resolution — stay yours
+- **the layout** — positions, sizes, colours, titles, collapsed nodes — stays yours
+- nodes you added yourself are carried across
+
+The result is saved as a **new file**; the one you have is never overwritten. A report
+says what was kept, what was taken, what upstream dropped and which links had to be cut.
+
+---
+
+### The model a workflow needs, found for you
+
+Open a workflow's details and the models it uses are listed, with the missing ones marked.
+Each gets a **Find it** button: Civitai first, then **Hugging Face**, which is where most
+of the current video models, text encoders and VAEs actually live. Pick the file inside
+the repo, pick where it goes, and it joins the same download queue.
+
+---
+
+### Relink LoRA paths
+
+A LoRA path inside a workflow is the path on the machine that made it. Open someone
+else's workflow, or move your own LoRAs into other folders, and the node points at a file
+that is not there — even though you have it.
+
+Right-click an SN1000 node and press **Relink LoRA paths**. It matches what is written
+against what you actually own: the same file name in another folder, the same name with a
+different extension, the same model saved under a differently written name, and — only
+when the original is nowhere at all — a higher-numbered version of it, which it tells you
+about afterwards. What it cannot match with confidence it leaves alone: a broken link is
+better than the wrong LoRA.
 
 ---
 
@@ -309,8 +438,9 @@ Restart ComfyUI. **No extra dependencies** — nothing to `pip install`.
 ### Nothing else to install
 
 Everything Civitai is built in — fetching info and previews, reading a model's version
-list, checking for updates, searching and downloading. **No separate LoRA manager is
-needed**, and none is assumed.
+list, checking for updates, searching and downloading — and Hugging Face search comes
+with it for the models Civitai does not carry. **No separate LoRA manager is needed**,
+and none is assumed.
 
 The files it writes are the ordinary sidecars that sit next to each LoRA
 (`<lora>.metadata.json`, `<lora>.preview.*`), so a library some other tool filled in
@@ -340,9 +470,11 @@ testing a single change quick.
 | Theme presets | `presets/<theme>/<name>.json` | ✅ Yes |
 | Resolution list | `resolutions.json` | ✅ Yes |
 | Wildcard favourites | `wildcard_favorites.json` | ✅ Yes |
-| LoRA info from Civitai | `<lora>.metadata.json`, `<lora>.preview.*` | ✅ Yes |
+| Workflow favourites | `workflow_favorites.json` | ✅ Yes |
+| Model info from Civitai | `<model>.metadata.json`, `<model>.preview.*` | ✅ Yes |
 | Civitai API key | `user_settings.json` (never committed) | ✅ Yes |
-| Update results and "not an update" marks | `civitai_updates.json` (never committed) | ✅ Yes |
+| Update results and "not an update" marks | `civitai_updates.json`, `civitai_updates_checkpoints.json` | ✅ Yes |
+| Where a workflow came from, its original copy and cover image | `user/<you>/sm1000_workflows/` | ✅ Yes |
 | Checklist items | the workflow file | ❌ No |
 | Selected values | the workflow file | ❌ No |
 

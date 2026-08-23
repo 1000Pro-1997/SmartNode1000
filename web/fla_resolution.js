@@ -638,11 +638,16 @@ app.registerExtension({
                     if (!isLinked()) return false;      // 회색일 때는 비율 선택 불가
                     if (!inBounds(pos, this.bounds.name)) return false;
 
-                    // 비율은 목록과 별개로 흔한 것들을 쓴다
-                    const RATIOS = [
+                    // 비율은 목록과 별개로 흔한 것들을 쓴다.
+                    // 가로형 기준으로 적어 두고, 세로형이면 뒤집어 보여준다.
+                    // 지금 방향과 반대되는 비율은 목록에 넣지 않는다.
+                    const BASE_RATIOS = [
                         [1, 1], [4, 3], [3, 2], [16, 10], [16, 9], [21, 9],
-                        [5, 4], [2, 1], [3, 4], [2, 3], [9, 16],
+                        [5, 4], [2, 1],
                     ];
+                    const flip = getH() > getW();
+                    const RATIOS = BASE_RATIOS.map(
+                        ([a, b]) => (flip ? [b, a] : [a, b]));
                     openMenu(RATIOS.map(([a, b]) => `${a}:${b}`), event, (val) => {
                         const r = parseRatio(val);
                         if (!r) return;

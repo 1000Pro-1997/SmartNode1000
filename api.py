@@ -10,6 +10,7 @@ from server import PromptServer
 
 import folder_paths
 
+from . import models
 from . import presets
 
 routes = PromptServer.instance.routes
@@ -43,7 +44,10 @@ async def get_settings(request):
     # Civitai API 키는 화면에 내려보내지 않는다. 있는지 여부만 알려주면 된다
     # (/fla/civitai/status 의 has_key). 부분 갱신이라 여기서 빼도 지워지지 않는다.
     settings = _read_settings()
+    # 비밀은 화면에 내려보내지 않는다. 있는지 여부만 알려주면 된다
+    # (/fla/civitai/status 의 has_key, has_session).
     settings.pop("civitai_api_key", None)
+    settings.pop("civitai_session", None)
     return web.json_response({"settings": settings})
 
 
@@ -66,31 +70,18 @@ async def post_settings(request):
     return web.json_response({"ok": True, "settings": data})
 
 
+# 아래 헬퍼들은 이제 models.py 가 종류별로 들고 있다. 로라 라우트가 부르던
+# 이름은 그대로 두고 속만 넘긴다. 체크포인트도 똑같은 규칙을 타게 하려고
+# 한 곳으로 모은 것이다.
+LORAS = "loras"
+
+
 def _inside_lora_folders(path):
-    resolved = os.path.realpath(path)
-    for root in folder_paths.get_folder_paths("loras"):
-        try:
-            if os.path.commonpath([resolved, os.path.realpath(root)]) == os.path.realpath(root):
-                return resolved
-        except ValueError:
-            continue
-    return None
+    return models.inside_roots(LORAS, path)
 
 
 def _preview_path(stem, configured=None):
-    if isinstance(configured, str) and not os.path.isabs(configured):
-        configured = os.path.join(os.path.dirname(stem), configured)
-    candidates = ([configured] if isinstance(configured, str) else []) + [
-        stem + ext for ext in (".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp",
-                               ".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm")
-    ]
-    for candidate in candidates:
-        if not candidate or candidate.startswith(("http://", "https://")):
-            continue
-        resolved = _inside_lora_folders(candidate)
-        if resolved and os.path.isfile(resolved):
-            return resolved
-    return None
+    return models.preview_path(LORAS, stem, configured)
 
 
 @routes.get("/fla/themes")
@@ -118,27 +109,15 @@ async def get_loras(request):
 
 # Civitai nsfwLevel 비트마스크에서 R 등급(4) 이상이면 성인물로 본다.
 # 미리보기 이미지 등급(preview_nsfw_level)이 있으면 그것을 우선한다.
-ADULT_LEVEL = 4
+ADULT_LEVEL = models.ADULT_LEVEL
 
 
 def _is_adult(metadata):
-    level = metadata.get("preview_nsfw_level")
-    if isinstance(level, int):
-        return level >= ADULT_LEVEL
-    civitai = metadata.get("civitai") or {}
-    level = civitai.get("nsfwLevel")
-    if isinstance(level, int):
-        return level >= ADULT_LEVEL
-    return (civitai.get("model") or {}).get("nsfw") is True
+    return models.is_adult(metadata)
 
 
 def _trained_words(metadata):
-    words = metadata.get("trained_words") or metadata.get("trigger_words")
-    if not words:
-        words = (metadata.get("civitai") or {}).get("trainedWords") or []
-    if isinstance(words, str):
-        words = [word.strip() for word in words.split(",")]
-    return [word for word in words if isinstance(word, str) and word.strip()]
+    return models.trained_words(metadata)
 
 
 def _lora_info(name):
@@ -283,68 +262,26 @@ async def get_lora_detail(request):
 
 
 def _metadata_path(name):
-    full = folder_paths.get_full_path("loras", name)
-    if full is None:
-        return None, None
-    return full, os.path.splitext(full)[0] + ".metadata.json"
+    return models.paths(LORAS, name)
 
 
 def _load_metadata(metadata_path):
-    if not metadata_path or not os.path.isfile(metadata_path):
-        return {}
-    try:
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return models.load_metadata(metadata_path)
 
 
 def _save_metadata(metadata_path, data):
-    temp = metadata_path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(temp, metadata_path)
+    models.save_metadata(metadata_path, data)
 
 
-# 대표 이미지로 쓸 수 있는 형식
-PREVIEW_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm")
-# 업로드 상한. 예시 영상이 몇 MB 씩 하므로 넉넉히 잡는다.
-MAX_PREVIEW_BYTES = 64 * 1024 * 1024
+PREVIEW_EXTS = models.PREVIEW_EXTS
+MAX_PREVIEW_BYTES = models.MAX_PREVIEW_BYTES
 
 
 def _write_preview(name, blob, ext):
-    """대표 이미지를 <로라이름>.preview.<확장자> 로 저장하고 메타데이터를 가리킨다.
-
-    확장자가 바뀔 수 있으므로(png -> mp4) 예전 preview 파일은 지운다.
-    """
-    full, metadata_path = _metadata_path(name)
-    if full is None:
-        return None, "LoRA not found"
-    stem = os.path.splitext(full)[0]
-
-    for old_ext in PREVIEW_EXTS:
-        old_file = stem + ".preview" + old_ext
-        if os.path.isfile(old_file):
-            try:
-                os.remove(old_file)
-            except OSError:
-                pass
-
-    target = stem + ".preview" + ext
-    try:
-        with open(target, "wb") as f:
-            f.write(blob)
-    except OSError as e:
-        return None, str(e)
-
-    metadata = _load_metadata(metadata_path)
-    metadata["preview_url"] = os.path.basename(target)
-    try:
-        _save_metadata(metadata_path, metadata)
-    except OSError as e:
-        return None, str(e)
-    return target, None
+    """대표 이미지를 <로라이름>.preview.<확장자> 로 저장하고 메타데이터를 가리킨다."""
+    target, error = models.write_preview(LORAS, name, blob, ext)
+    # 로라 화면은 "LoRA not found" 라는 말을 그대로 보여준다
+    return target, ("LoRA not found" if error == "Model not found" else error)
 
 
 @routes.post("/fla/lora-preview-set")

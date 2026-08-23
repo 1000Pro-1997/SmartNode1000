@@ -20,6 +20,8 @@ node.zip
 user_settings.json
 wildcard_favorites.json
 civitai_updates.json
+civitai_updates_checkpoints.json
+workflow_favorites.json
 
 # Source recordings for README GIFs (published copies live in media/)
 움짤/

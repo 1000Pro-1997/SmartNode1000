@@ -17,8 +17,10 @@ import {
 // 받아온 모델은 창을 닫을 때까지 돌려 쓴다(같은 모델을 두 번 부르지 않게).
 const cache = new Map();
 // 저장 폴더 목록도 한 번만 받는다.
-let foldersPromise = null;
-let folders = [];
+// 종류 -> 폴더 목록. 로라 폴더 목록이 체크포인트 칸에 뜨면 엉뚱한 곳에 받게 된다.
+const folders = new Map();
+// 아직 오는 중인 약속. 같은 종류를 두 번 부르지 않으려고 담아 둔다.
+const folderCalls = new Map();
 // datalist 는 문서에서 id 로 찾는다. 칸이 여럿이면 겹치지 않게 번호를 붙인다.
 let serial = 0;
 
@@ -29,19 +31,30 @@ function prettyDate(iso) {
     return isNaN(date) ? String(iso) : date.toISOString().slice(0, 10);
 }
 
-/** 저장 폴더 후보. 받아 두고 모두가 같이 쓴다. */
-export async function loadFolders(force = false) {
-    if (force) foldersPromise = null;
-    foldersPromise ??= json("/fla/civitai/folders")
-        .then(({ data }) => { folders = data?.folders ?? []; return folders; })
-        .catch(() => { folders = []; return folders; });
-    return foldersPromise;
+/** 저장 폴더 후보. 종류마다 폴더가 다르므로 종류별로 담아 둔다. */
+export async function loadFolders(kind = "loras", force = false) {
+    if (!kind) return [];
+    if (force) folderCalls.delete(kind);
+    if (!folderCalls.has(kind)) {
+        folderCalls.set(kind, json(`/fla/civitai/folders?kind=${encodeURIComponent(kind)}`)
+            .then(({ data }) => data?.folders ?? [])
+            .catch(() => []));
+    }
+    const found = await folderCalls.get(kind);
+    folders.set(kind, found);
+    return found;
+}
+
+/** 이미 읽어 둔 폴더 목록. 아직이면 빈 배열(곧 채워진다). */
+export function foldersFor(kind) {
+    return folders.get(kind) ?? [];
 }
 
 /** 받아 둔 것을 버린다. 창을 닫을 때 부른다 — 그 사이 파일을 지웠을 수도 있다. */
 export function clearCache() {
     cache.clear();
-    foldersPromise = null;
+    folders.clear();
+    folderCalls.clear();
 }
 
 /** 받아 둔 모델에서 이 버전을 "있음" 으로 바꾼다(받자마자 화면에 반영하려고). */
@@ -72,7 +85,7 @@ export function createModelDetail({ onQueued = null, onClose = null, revealed = 
     let pickVersion = null;  // 처음 고를 버전 id
     let folderHint = null;   // 저장 폴더 기본값(없으면 서버가 제안한 곳)
 
-    loadFolders();
+    loadFolders("loras");
 
     // ---------------------------------------------- 조각
     /** 버전 알약 줄. 고른 것이 파랗다. */
@@ -210,6 +223,11 @@ export function createModelDetail({ onQueued = null, onClose = null, revealed = 
         const versions = model.versions ?? [];
         let index = Math.max(0, versions.findIndex((v) => v.id === pickVersion));
 
+        // 서버가 모델마다 우리 종류를 실어 준다. 빈 값이면 받아둘 자리를 모르는
+        // 종류다(포즈·VAE 같은 것) — 그때는 받기 단추를 끄고 Civitai 로 보낸다.
+        const kind = model.kind ?? "";
+        if (kind) loadFolders(kind).then(() => { if (host.isConnected) drawVersion(); });
+
         const drawVersion = () => {
             const version = versions[index] ?? {};
             const blurred = (model.nsfw || (model.nsfw_level ?? 0) >= ADULT_LEVEL) && !seen.has(model.id);
@@ -236,15 +254,27 @@ export function createModelDetail({ onQueued = null, onClose = null, revealed = 
             folderField.appendChild(folderInput);
             const list = el("datalist");
             list.id = listId;
-            for (const folder of folders) list.appendChild(new Option(folder, folder));
+            for (const folder of foldersFor(kind)) list.appendChild(new Option(folder, folder));
             folderField.appendChild(list);
+            // 아직 없는 폴더를 골라 줬으면 알려 준다. 받으면서 만들어진다.
+            const fresh = el("div", "fla-cv-fresh");
+            const paintFresh = () => {
+                const typed = folderInput.value.trim();
+                const known = foldersFor(kind).some((f) => f.toLowerCase() === typed.toLowerCase());
+                fresh.textContent = typed && !known ? t("civitaiFolderNew") : "";
+            };
+            paintFresh();
+            folderInput.addEventListener("input", paintFresh);
+            folderField.appendChild(fresh);
             host.appendChild(folderField);
 
             const size = version.size_kb ? ` (${prettySize(version.size_kb * 1024)})` : "";
             const grab = el("button", `fla-cv-get${version.installed ? " owned" : ""}`);
             grab.append(document.createTextNode("⬇"), document.createTextNode(
                 `${version.installed ? t("civitaiDownloadAgain") : t("civitaiDownload")}${size}`));
-            grab.disabled = !version.downloadable;
+            // 받아둘 자리를 모르는 종류는 여기서 받지 않는다
+            grab.disabled = !version.downloadable || !kind;
+            if (!kind) grab.title = t("civitaiNoPlace");
             grab.onclick = async () => {
                 grab.disabled = true;
                 try {
@@ -254,6 +284,9 @@ export function createModelDetail({ onQueued = null, onClose = null, revealed = 
                             version_id: version.id,
                             folder: folderInput.value.trim(),
                             title: model.name,
+                            kind,
+                            // 막혔을 때 화면이 Civitai 로 보내려면 글 번호가 필요하다
+                            model_id: model.id,
                         }));
                     } catch (e) {
                         data = null;
@@ -266,6 +299,19 @@ export function createModelDetail({ onQueued = null, onClose = null, revealed = 
                 }
             };
             host.appendChild(grab);
+
+            // API 로 막히는 글이 있다(글쓴이가 로그인한 사람만 받게 해 둔 것).
+            // 브라우저는 로그인 상태이므로 이 주소를 열면 바로 받아진다.
+            // 받은 파일은 "브라우저로 받아 둔 것" 이 이어받는다.
+            if (version.downloadable && version.id) {
+                const direct = el("a", "fla-cv-direct");
+                direct.href = `https://civitai.com/api/download/models/${version.id}`;
+                direct.target = "_blank";
+                direct.rel = "noopener noreferrer";
+                direct.textContent = t("civitaiDirect");
+                direct.title = t("civitaiDirectWhy");
+                host.appendChild(direct);
+            }
             if (version.installed) host.appendChild(el("div", "fla-cv-now", `✓ ${t("civitaiHaveLong")}`));
 
             const open = el("a", "fla-cv-link");

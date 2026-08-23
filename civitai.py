@@ -9,6 +9,7 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import time
@@ -19,17 +20,14 @@ from server import PromptServer
 
 import folder_paths
 
-from .api import (
-    PREVIEW_EXTS,
-    MAX_PREVIEW_BYTES,
-    _load_metadata,
-    _metadata_path,
-    _preview_path,
-    _read_settings,
-    _save_metadata,
-    _write_preview,
-    _write_settings,
-)
+from . import models
+from .api import _read_settings, _write_settings
+
+# 곁다리 파일 규칙은 종류마다 같다. models 가 종류별로 들고 있다.
+PREVIEW_EXTS = models.PREVIEW_EXTS
+MAX_PREVIEW_BYTES = models.MAX_PREVIEW_BYTES
+_load_metadata = models.load_metadata
+_save_metadata = models.save_metadata
 
 routes = PromptServer.instance.routes
 
@@ -41,6 +39,32 @@ REQUEST_GAP = 0.4
 TIMEOUT = 30
 # 진행 창에 남겨 보여줄 실패 기록 개수
 MAX_ERRORS = 20
+
+
+# Civitai 가 붙이는 종류 이름을 우리 종류로 옮긴다.
+# 파생형(LoCon·DoRA)도 로라 폴더에 들어가므로 같이 묶는다.
+TYPE_TO_KIND = {
+    "LORA": "loras", "LoCon": "loras", "DoRA": "loras",
+    "Checkpoint": "checkpoints",
+    "VAE": "vae",
+    "Controlnet": "controlnet",
+    "Upscaler": "upscale_models",
+    "TextualInversion": "embeddings",
+    "Workflows": "workflows",
+    "Wildcards": "wildcards",
+}
+
+# 모델 폴더가 아닌 것들. 압축을 풀어 제 폴더에 넣는다.
+ARCHIVE_KINDS = ("workflows", "wildcards")
+
+
+def kind_for_type(civitai_type):
+    """Civitai 종류 이름 -> 우리 종류. 우리가 다루지 않는 것이면 빈 문자열."""
+    return TYPE_TO_KIND.get(str(civitai_type or ""), "")
+
+
+def kind_ok(kind):
+    return models.known(kind) or kind in ARCHIVE_KINDS
 
 
 class CivitaiError(Exception):
@@ -68,6 +92,16 @@ async def sha256_async(path):
 
 
 # ---------------------------------------------------------------- HTTP
+
+
+def _session_cookie():
+    """브라우저 세션 쿠키. 없으면 None.
+
+    로그인해야 받을 수 있는 글에만 쓴다. 평소 받기에는 필요 없다.
+    """
+    value = _read_settings().get("civitai_session")
+    value = value.strip() if isinstance(value, str) else ""
+    return value or None
 
 
 def _api_key():
@@ -151,13 +185,23 @@ def has_info(metadata):
     return bool(metadata.get("civitai"))
 
 
-def pick_preview(version):
-    """대표로 쓸 예시 하나를 고른다. Civitai 가 먼저 주는 것이 표지 이미지다."""
+def pick_preview(version, still_only=False):
+    """대표로 쓸 예시 하나를 고른다. Civitai 가 먼저 주는 것이 표지 이미지다.
+
+    still_only 를 켜면 영상은 건너뛰고 정지 그림만 고른다. 워크플로우
+    대표 그림이 그렇다 — 카드가 노드 그림과 번갈아 보여주는 자리라
+    움직이는 것이 끼면 어지럽고, 저장 형식도 그림만 받는다.
+    """
+    fallback = None
     for image in version.get("images") or []:
         url = image.get("url")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
-            return image
-    return None
+        if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+            continue
+        if (image.get("type") or "image") == "video":
+            fallback = fallback or image
+            continue
+        return image
+    return None if still_only else fallback
 
 
 def build_metadata(existing, version, model, full_path, sha256):
@@ -218,7 +262,8 @@ async def fetch_model(model_id, api_key):
     return await _get_json(f"/models/{model_id}", api_key)
 
 
-async def enrich(name, api_key, overwrite=False, set_preview=True, replace_preview=False):
+async def enrich(name, api_key, overwrite=False, set_preview=True, replace_preview=False,
+                 kind=models.DEFAULT_KIND):
     """로라 하나를 Civitai 정보로 채운다.
 
     overwrite 가 거짓이면 이미 정보가 있는 파일은 건드리지 않는다.
@@ -226,7 +271,7 @@ async def enrich(name, api_key, overwrite=False, set_preview=True, replace_previ
     말없이 바꾸지 않으려고, 정보를 새로 받을 때도 그림은 그대로 둔다
     (replace_preview 를 켜야 바꾼다).
     """
-    full, metadata_path = _metadata_path(name)
+    full, metadata_path = models.paths(kind, name)
     if full is None or not os.path.isfile(full):
         raise CivitaiError("파일을 찾을 수 없음")
 
@@ -255,7 +300,7 @@ async def enrich(name, api_key, overwrite=False, set_preview=True, replace_previ
     data = build_metadata(metadata, version, model, full, sha)
 
     stem = os.path.splitext(full)[0]
-    already = _preview_path(stem, metadata.get("preview_url")) is not None
+    already = models.preview_path(kind, stem, metadata.get("preview_url")) is not None
     blob = None
     ext = None
     image = None
@@ -279,7 +324,7 @@ async def enrich(name, api_key, overwrite=False, set_preview=True, replace_previ
     stamp = None
     if blob is not None:
         # _write_preview 가 파일에서 메타데이터를 다시 읽으므로 저장한 뒤에 부른다
-        _, error = _write_preview(name, blob, ext)
+        _, error = models.write_preview(kind, name, blob, ext)
         if not error:
             stamp = int(time.time())
 
@@ -306,6 +351,7 @@ _progress = {
     "cancelled": False,
     "errors": [],
     "finished_at": 0,
+    "kind": models.DEFAULT_KIND,
 }
 _task = None
 
@@ -328,26 +374,33 @@ def _reset_progress(total):
 # 남은 개수는 진행 창이 0.7 초마다 물어본다. 매번 로라 전부의 metadata.json 을
 # 읽으면(로라가 많을수록 오래 걸린다) 서버가 그만큼 멈춘다. 잠깐은 같은 값을 준다.
 PENDING_TTL = 5.0
-_pending = {"value": None, "at": 0.0}
+_pending = {}
 
 
-def _invalidate_pending():
-    _pending["value"] = None
+def invalidate_pending():
+    _pending.clear()
 
 
-def pending_count():
+# 옛 이름. 다른 모듈이 아직 부른다.
+_invalidate_pending = invalidate_pending
+
+
+def pending_count(kind=models.DEFAULT_KIND):
+    if not models.known(kind):
+        return 0
     now = time.monotonic()
-    if _pending["value"] is None or now - _pending["at"] > PENDING_TTL:
-        _pending["value"] = len(_targets(False))
-        _pending["at"] = now
-    return _pending["value"]
+    slot = _pending.get(kind)
+    if slot is None or now - slot[1] > PENDING_TTL:
+        slot = (len(_targets(False, kind)), now)
+        _pending[kind] = slot
+    return slot[0]
 
 
-def _targets(overwrite):
+def _targets(overwrite, kind=models.DEFAULT_KIND):
     """검사할 파일 목록. 기본은 아직 정보가 없는 것만 고른다."""
     names = []
-    for name in folder_paths.get_filename_list("loras"):
-        _, metadata_path = _metadata_path(name)
+    for name in models.names(kind):
+        _, metadata_path = models.paths(kind, name)
         if metadata_path is None:
             continue
         metadata = _load_metadata(metadata_path)
@@ -361,14 +414,14 @@ def _targets(overwrite):
     return names
 
 
-async def _scan(names, api_key, overwrite, set_preview, replace_preview):
+async def _scan(names, api_key, overwrite, set_preview, replace_preview, kind=models.DEFAULT_KIND):
     try:
         for name in names:
             if _progress["cancelled"]:
                 break
             _progress["current"] = name
             try:
-                result = await enrich(name, api_key, overwrite, set_preview, replace_preview)
+                result = await enrich(name, api_key, overwrite, set_preview, replace_preview, kind)
                 if result["updated"]:
                     _progress["updated"] += 1
             except NotFound:
@@ -395,10 +448,19 @@ async def _scan(names, api_key, overwrite, set_preview, replace_preview):
 
 @routes.get("/fla/civitai/status")
 async def get_civitai_status(request):
+    kind = request.query.get("kind") or models.DEFAULT_KIND
+    # 워크플로우도 이 창의 종류 단추에 들어온다. 해시로 정보를 채울 수 없는
+    # 종류라 '아직 정보 없는 개수' 는 언제나 0 이다.
+    if not kind_ok(kind):
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
     return web.json_response({
         "ok": True,
+        "kind": kind,
         "has_key": _api_key() is not None,
-        "pending": pending_count(),
+        "has_session": _session_cookie() is not None,
+        "pending": pending_count(kind),
+        # 종류별 남은 개수를 한 번에 준다. 창 위쪽 종류 단추에 숫자를 찍는다.
+        "pending_by_kind": {k: pending_count(k) for k in models.MAIN_KINDS},
         "progress": dict(_progress),
     })
 
@@ -426,6 +488,37 @@ async def post_civitai_key(request):
     return web.json_response({"ok": True, "has_key": bool(key)})
 
 
+@routes.post("/fla/civitai/session")
+async def post_civitai_session(request):
+    """브라우저 세션 쿠키를 저장한다(비우면 지운다).
+
+    API 키와 같은 파일에 둔다 — 깃에 올라가지 않는 user_settings.json.
+    이 값은 계정 로그인과 같은 힘을 가지므로 화면에도 되돌려 주지 않는다.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "Bad request"}, status=400)
+    value = body.get("session")
+    if not isinstance(value, str):
+        return web.json_response({"ok": False, "error": "Bad request"}, status=400)
+
+    settings = _read_settings()
+    value = value.strip()
+    if value:
+        # 사람들이 "Cookie: a=b" 통째로 붙여넣는다. 앞머리는 떼어낸다.
+        if value.lower().startswith("cookie:"):
+            value = value[len("cookie:"):].strip()
+        settings["civitai_session"] = value
+    else:
+        settings.pop("civitai_session", None)
+    try:
+        _write_settings(settings)
+    except OSError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+    return web.json_response({"ok": True, "has_session": bool(value)})
+
+
 @routes.post("/fla/civitai/fetch")
 async def post_civitai_fetch(request):
     try:
@@ -433,9 +526,12 @@ async def post_civitai_fetch(request):
     except Exception:
         return web.json_response({"ok": False, "error": "Bad request"}, status=400)
 
+    kind = body.get("kind") or models.DEFAULT_KIND
+    if not models.known(kind):
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
     name = body.get("name", "")
-    if name not in folder_paths.get_filename_list("loras"):
-        return web.json_response({"ok": False, "error": "LoRA not found"}, status=404)
+    if models.paths(kind, name)[0] is None:
+        return web.json_response({"ok": False, "error": "Model not found"}, status=404)
 
     try:
         # 버튼으로 직접 부른 것이니 이미 정보가 있어도 새로 받는다
@@ -445,6 +541,7 @@ async def post_civitai_fetch(request):
             overwrite=body.get("overwrite") is not False,
             set_preview=body.get("set_preview") is not False,
             replace_preview=body.get("replace_preview") is True,
+            kind=kind,
         )
     except NotFound as e:
         return web.json_response({"ok": False, "missing": True, "error": str(e)}, status=404)
@@ -466,18 +563,23 @@ async def post_civitai_scan(request):
         body = await request.json()
     except Exception:
         body = {}
+    kind = body.get("kind") or models.DEFAULT_KIND
+    if not models.known(kind):
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
     overwrite = body.get("overwrite") is True
     set_preview = body.get("set_preview") is not False
     replace_preview = body.get("replace_preview") is True
 
-    names = _targets(overwrite)
+    names = _targets(overwrite, kind)
     _reset_progress(len(names))
+    _progress["kind"] = kind
     if not names:
         _progress["running"] = False
         _progress["finished_at"] = int(time.time())
         return web.json_response({"ok": True, "progress": dict(_progress)})
 
-    _task = asyncio.create_task(_scan(names, _api_key(), overwrite, set_preview, replace_preview))
+    _task = asyncio.create_task(
+        _scan(names, _api_key(), overwrite, set_preview, replace_preview, kind))
     return web.json_response({"ok": True, "progress": dict(_progress)})
 
 
@@ -501,46 +603,57 @@ DETAIL_IMAGES = 20
 # 이미 가진 로라 목록을 다시 훑는 간격(초)
 INSTALLED_TTL = 10.0
 
-_installed = {"hashes": None, "names": None, "by_hash": None, "by_name": None, "at": 0.0}
+# 종류별로 따로 담는다. 로라 목록과 체크포인트 목록이 서로를 덮으면
+# 검색 결과의 '있음' 표시가 엉킨다.
+_installed = {}
 
 
-def _installed_index():
-    """이미 가진 로라의 해시와 파일 이름. 검색 결과에 '있음' 을 찍는 데 쓴다.
+def _installed_index(kind=models.DEFAULT_KIND):
+    """이미 가진 파일의 해시와 이름. 검색 결과에 '있음' 을 찍는 데 쓴다.
 
     해시가 없는 파일도 있으므로(아직 한 번도 안 채운 것) 이름도 같이 본다.
     어느 파일이었는지도 같이 담아둔다(버전 목록에서 지울 때 쓴다).
     """
+    if not models.known(kind):
+        return set(), set()
     now = time.monotonic()
-    if _installed["hashes"] is None or now - _installed["at"] > INSTALLED_TTL:
+    slot = _installed.get(kind)
+    if slot is None or now - slot["at"] > INSTALLED_TTL:
         by_hash = {}
         by_name = {}
-        for name in folder_paths.get_filename_list("loras"):
+        for name in models.names(kind):
             by_name.setdefault(os.path.basename(name).lower(), name)
-            _, metadata_path = _metadata_path(name)
-            sha = _load_metadata(metadata_path).get("sha256")
+            _, metadata_path = models.paths(kind, name)
+            sha = models.load_metadata(metadata_path).get("sha256")
             if isinstance(sha, str) and len(sha) == 64:
                 by_hash.setdefault(sha.lower(), name)
-        _installed.update({
-            "hashes": set(by_hash), "names": set(by_name),
-            "by_hash": by_hash, "by_name": by_name, "at": now,
-        })
-    return _installed["hashes"], _installed["names"]
+        slot = {"hashes": set(by_hash), "names": set(by_name),
+                "by_hash": by_hash, "by_name": by_name, "at": now}
+        _installed[kind] = slot
+    return slot["hashes"], slot["names"]
 
 
-def installed_name(sha, file_name):
-    """이미 가진 파일이면 로라 목록에서 쓰는 이름(폴더 포함). 없으면 빈 문자열."""
-    _installed_index()
+def installed_name(sha, file_name, kind=models.DEFAULT_KIND):
+    """이미 가진 파일이면 목록에서 쓰는 이름(폴더 포함). 없으면 빈 문자열."""
+    _installed_index(kind)
+    slot = _installed.get(kind)
+    if slot is None:
+        return ""
     if sha:
-        found = _installed["by_hash"].get(sha.lower())
+        found = slot["by_hash"].get(sha.lower())
         if found:
             return found
     if file_name:
-        return _installed["by_name"].get(file_name.lower(), "")
+        return slot["by_name"].get(file_name.lower(), "")
     return ""
 
 
-def _invalidate_installed():
-    _installed["hashes"] = None
+def invalidate_installed():
+    _installed.clear()
+
+
+# 옛 이름. 다른 모듈이 아직 부른다.
+_invalidate_installed = invalidate_installed
 
 
 def _trim_image(image):
@@ -578,13 +691,16 @@ def _review_label(up, down):
     return name, total
 
 
-def _trim_version(version, hashes, names, model=None, folders=None, max_images=SEARCH_IMAGES):
+def _trim_version(version, hashes, names, model=None, folders=None, max_images=SEARCH_IMAGES,
+                  kind=models.DEFAULT_KIND):
     primary = _primary_file(version) or {}
     sha = ((primary.get("hashes") or {}).get("SHA256") or "").lower()
     file_name = primary.get("name") or ""
     stats = version.get("stats") or {}
     review, reviews = _review_label(stats.get("thumbsUpCount"), stats.get("thumbsDownCount"))
     model_id = version.get("modelId") or (model or {}).get("id")
+    folder_pick = (suggest_folder_full(model or {}, version, folders, kind)
+                   if folders is not None else ("", False))
     return {
         "id": version.get("id"),
         "name": version.get("name") or "",
@@ -596,10 +712,12 @@ def _trim_version(version, hashes, names, model=None, folders=None, max_images=S
         "downloadable": bool(primary),
         "installed": bool((sha and sha in hashes) or (file_name and file_name.lower() in names)),
         # 이미 가진 파일이면 그 이름. 버전 목록에서 지울 때 이 이름으로 부른다.
-        "installed_name": installed_name(sha, file_name),
+        "installed_name": installed_name(sha, file_name, kind),
         "trained_words": version.get("trainedWords") or [],
         # 어느 폴더에 둘지 미리 골라둔다(화면에서 바꿀 수 있다)
-        "folder": suggest_folder(model or {}, version, folders) if folders is not None else "",
+        "folder": folder_pick[0],
+        # 없는 폴더를 제안했으면 화면이 '새로 만듭니다' 라고 알려준다
+        "folder_is_new": folder_pick[1],
         "downloads": stats.get("downloadCount"),
         "review": review,
         "reviews": reviews,
@@ -612,15 +730,41 @@ def _trim_version(version, hashes, names, model=None, folders=None, max_images=S
     }
 
 
-def _trim_model(model, hashes, names, folders=None, full=False):
+def _trim_model(model, hashes=None, names=None, folders=None, full=False, cache=None):
+    """카드 하나로 줄인다.
+
+    "전체" 로 훑으면 결과에 로라와 체크포인트가 섞여 온다. 그래서 넘겨받은
+    목록을 그대로 쓰지 않고 모델마다 제 종류의 목록을 본다. cache 는
+    한 번의 요청 안에서 종류별 조회를 한 번씩만 하려고 쓴다.
+    """
+    kind = kind_for_type(model.get("type"))
+    if cache is None:
+        cache = {}
+    if kind not in cache:
+        if models.known(kind):
+            folders = library_folders(kind)
+        elif kind in ARCHIVE_KINDS:
+            # 워크플로우·와일드카드는 모델 폴더가 아니지만 하위 폴더는 있다
+            folders = _archive_folders(kind)
+        else:
+            folders = []
+        cache[kind] = {
+            "index": _installed_index(kind) if models.known(kind) else (set(), set()),
+            "folders": folders,
+        }
+    hashes, names = cache[kind]["index"]
+    folders = cache[kind]["folders"]
+
     stats = model.get("stats") or {}
     versions = [_trim_version(v, hashes, names, model, folders,
-                              DETAIL_IMAGES if full else SEARCH_IMAGES)
+                              DETAIL_IMAGES if full else SEARCH_IMAGES, kind)
                 for v in (model.get("modelVersions") or [])]
     return {
         "id": model.get("id"),
         "name": model.get("name") or "",
         "type": model.get("type") or "",
+        # 우리가 받아둘 자리를 아는 종류인지. 빈 값이면 화면이 받기 버튼을 끈다.
+        "kind": kind,
         "nsfw": model.get("nsfw") is True,
         "nsfw_level": model.get("nsfwLevel") if isinstance(model.get("nsfwLevel"), int) else 0,
         "tags": model.get("tags") or [],
@@ -642,7 +786,11 @@ async def get_civitai_search(request):
     브라우저에서 직접 부르면 교차 출처에 걸리고 API 키도 노출된다.
     """
     query = request.query
-    params = {"limit": SEARCH_LIMIT, "types": query.get("types") or "LORA"}
+    params = {"limit": SEARCH_LIMIT}
+    # "전체" 를 고르면 types 를 아예 붙이지 않는다(Civitai 가 모든 종류를 준다)
+    types = (query.get("types") or "").strip()
+    if types and types.lower() != "all":
+        params["types"] = types
     for key, name in (("query", "query"), ("tag", "tag"), ("username", "username"),
                       ("sort", "sort"), ("period", "period"), ("baseModels", "baseModels")):
         value = query.get(name, "").strip()
@@ -659,10 +807,9 @@ async def get_civitai_search(request):
     except CivitaiError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=502)
 
-    hashes, names = _installed_index()
-    # 폴더 목록은 한 번만 훑고 모든 결과에 돌려 쓴다
-    folders = library_folders()
-    items = [_trim_model(m, hashes, names, folders) for m in (data.get("items") or [])]
+    # 종류별 조회는 한 번씩만 하고 모든 결과에 돌려 쓴다
+    cache = {}
+    items = [_trim_model(m, cache=cache) for m in (data.get("items") or [])]
     return web.json_response({
         "ok": True,
         "items": items,
@@ -688,10 +835,9 @@ async def get_civitai_model(request):
     except CivitaiError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=502)
 
-    hashes, names = _installed_index()
     return web.json_response({
         "ok": True,
-        "model": _trim_model(model, hashes, names, library_folders(), full=True),
+        "model": _trim_model(model, full=True),
     })
 
 
@@ -723,10 +869,61 @@ FOLDER_RULES = [
 ]
 
 
-def library_folders():
-    """이미 로라가 들어 있는 하위 폴더 목록."""
+# 기반 모델로 나누는 규칙. 앞에 있는 것이 이긴다.
+# 영상 계열을 먼저 본다 — 기반이 다르면 아예 못 쓰므로 가장 중요한 갈래다.
+# 후보는 사람들이 실제로 쓰는 폴더 이름들이다(한글 폴더도 함께 본다).
+BASE_RULES = [
+    (("wan",), ("Wan2.2", "Wan2.1", "Wan", "영상", "Video")),
+    (("ltx",), ("LTX-Video", "LTXV", "LTX", "영상", "Video")),
+    (("hunyuan",), ("Hunyuan", "영상", "Video")),
+    (("minimax",), ("MiniMax", "영상", "Video")),
+    (("cogvideo", "mochi", "svd", "animatediff", "framepack"), ("영상", "Video")),
+    (("flux", "kontext"), ("FLUX", "Flux", "이미지", "Image")),
+    (("qwen",), ("Qwen", "이미지", "Image")),
+    (("illustrious", "noobai"), ("Illustrious", "SDXL", "이미지", "Image")),
+    (("pony",), ("Pony", "SDXL", "이미지", "Image")),
+    (("sdxl", "sd xl"), ("SDXL", "이미지", "Image")),
+    (("sd 3", "sd3"), ("SD3", "이미지", "Image")),
+    (("sd 2", "sd2"), ("SD2.1", "SD2", "이미지", "Image")),
+    (("sd 1", "sd1"), ("SD1.5", "SD15", "이미지", "Image")),
+]
+
+
+def _leaf_index(folders):
+    """폴더 이름의 마지막 칸으로 찾을 수 있게 만든다.
+
+    폴더 이름은 대소문자만 다를 수 있다(SDXL vs sdxl). 마지막 칸으로 견준다.
+    'SDXL/Illustrious' 는 illustrious 로도 찾힌다.
+    """
+    by_leaf = {}
+    for folder in folders:
+        by_leaf.setdefault(folder.split("/")[-1].lower(), folder)
+    return by_leaf
+
+
+def _match_base(base, by_leaf):
+    """기반 모델에 맞는 폴더. (찾은 폴더, 새로 만들 이름) 을 준다.
+
+    이미 있는 폴더를 먼저 찾는다. 없으면 첫 후보를 새 폴더로 제안한다.
+    """
+    low = str(base or "").lower()
+    if not low:
+        return "", ""
+    for needles, candidates in BASE_RULES:
+        if not any(needle in low for needle in needles):
+            continue
+        for candidate in candidates:
+            found = by_leaf.get(candidate.lower())
+            if found:
+                return found, ""
+        return "", candidates[0]
+    return "", ""
+
+
+def library_folders(kind=models.DEFAULT_KIND):
+    """이미 파일이 들어 있는 하위 폴더 목록."""
     folders = set()
-    for name in folder_paths.get_filename_list("loras"):
+    for name in models.names(kind):
         parent = os.path.dirname(name).replace("\\", "/")
         parts = [p for p in parent.split("/") if p]
         for depth in range(1, len(parts) + 1):
@@ -734,42 +931,71 @@ def library_folders():
     return sorted(folders)
 
 
-def suggest_folder(model, version, folders=None):
-    """받은 모델을 어느 폴더에 둘지 고른다. 마땅한 곳이 없으면 빈 문자열."""
+def suggest_folder(model, version, folders=None, kind=models.DEFAULT_KIND):
+    """받은 것을 어느 폴더에 둘지 고른다. 마땅한 곳이 없으면 빈 문자열."""
+    return suggest_folder_full(model, version, folders, kind)[0]
+
+
+def suggest_folder_full(model, version, folders=None, kind=models.DEFAULT_KIND):
+    """(폴더, 새로 만들어야 하나) 를 준다.
+
+    이미 쓰고 있는 폴더를 먼저 찾는다. 없으면 새로 만들 이름을 제안한다 —
+    받기 화면이 '새 폴더' 라고 알려 주고, 사용자가 지우면 뿌리에 떨어진다.
+    """
     if folders is None:
-        folders = library_folders()
-    # 폴더 이름은 대소문자만 다를 수 있다. 마지막 칸으로 견준다.
-    by_leaf = {}
-    for folder in folders:
-        by_leaf.setdefault(folder.split("/")[-1].lower(), folder)
+        folders = _archive_folders(kind) if kind in ARCHIVE_KINDS else library_folders(kind)
+    by_leaf = _leaf_index(folders)
 
     tags = {str(tag).lower() for tag in (model.get("tags") or [])}
-    base = str(version.get("baseModel") or "").lower()
+    base = str(version.get("baseModel") or "")
     adult = model.get("nsfw") is True or (model.get("nsfwLevel") or 0) >= ADULT_NSFW
 
-    for kind, needles, candidates in FOLDER_RULES:
-        if kind == "base":
-            hit = any(needle in base for needle in needles)
-        elif kind == "tag":
-            hit = bool(tags & set(needles))
-        else:
-            hit = adult
-        if not hit:
-            continue
-        for candidate in candidates:
-            found = by_leaf.get(candidate.lower())
-            if found:
-                return found
-    return ""
+    # 로라는 쓰임새(캐릭터·포즈·의상)로 나눈다. 그 규칙을 먼저 본다.
+    # 체크포인트·워크플로우는 그런 식으로 나누지 않으므로 건너뛴다.
+    if kind == "loras":
+        for rule_kind, needles, candidates in FOLDER_RULES:
+            if rule_kind == "base":
+                hit = any(needle in base.lower() for needle in needles)
+            elif rule_kind == "tag":
+                hit = bool(tags & set(needles))
+            else:
+                hit = adult
+            if not hit:
+                continue
+            for candidate in candidates:
+                found = by_leaf.get(candidate.lower())
+                if found:
+                    return found, False
+
+    # 기반 모델로 나누기. 체크포인트는 이것이 본줄기고, 로라는 마지막 기댈 곳이다.
+    found, fresh = _match_base(base, by_leaf)
+    if found:
+        return found, False
+    if fresh:
+        return fresh, True
+
+    # 성인물은 따로 모아 두는 사람이 많다. 폴더가 이미 있을 때만 쓴다.
+    if adult:
+        for candidate in ("Adult", "NSFW", "18", "성인"):
+            got = by_leaf.get(candidate.lower())
+            if got:
+                return got, False
+    return "", False
 
 
 @routes.get("/fla/civitai/folders")
 async def get_civitai_folders(request):
-    roots = folder_paths.get_folder_paths("loras")
+    kind = request.query.get("kind") or models.DEFAULT_KIND
+    if not kind_ok(kind):
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    if kind in ARCHIVE_KINDS:
+        root, folders = _archive_root(kind), _archive_folders(kind)
+        return web.json_response({"ok": True, "root": root or "", "folders": folders})
+    roots = models.roots(kind)
     return web.json_response({
         "ok": True,
         "root": roots[0] if roots else "",
-        "folders": library_folders(),
+        "folders": library_folders(kind),
     })
 
 
@@ -780,9 +1006,13 @@ DOWNLOAD_CHUNK = 1024 * 1024
 # 연결이 끊긴 채 매달려 있지 않도록. 전체 시간에는 제한을 두지 않는다(큰 파일).
 DOWNLOAD_READ_TIMEOUT = 120
 
+# 관리창에 보여줄 만큼만 기억한다. 다 쌓아 두면 창을 열 때마다 무거워진다.
+MAX_DONE = 40
+
 _dl = {
     "running": False,
     "queue": [],
+    "recent": [],
     "current": None,
     "received": 0,
     "total": 0,
@@ -799,17 +1029,97 @@ class Cancelled(CivitaiError):
     """사용자가 멈췄다. 실패로 세지 않는다."""
 
 
+class LoginNeeded(CivitaiError):
+    """브라우저로 로그인해야 받을 수 있다. API 키로는 안 된다.
+
+    글쓴이가 '로그인해야 다운로드' 를 켜 두면 이렇게 된다. 키를 등록해도
+    똑같이 막히므로, 키를 등록하라고 하면 안 된다."""
+
+    def __init__(self, message, had_session=False):
+        super().__init__(message)
+        # 세션까지 들고 갔는데도 막혔나(그러면 세션이 만료된 것이다)
+        self.had_session = had_session
+
+
+# 그런 경우 화면에 보여줄 말. Civitai 가 아무 말도 안 해줄 때 쓴다.
+_LOGIN_HINT = "글쓴이가 로그인한 사람만 받게 해 두었습니다 — Civitai 에서 직접 받으세요"
+
+
+def _looks_like_page(res, head):
+    """받아온 것이 모델 파일이 아니라 웹 화면인가."""
+    kind = (res.headers.get("Content-Type") or "").lower()
+    if kind.startswith(("text/html", "application/json")):
+        return True
+    return head[:15].lstrip().lower().startswith((b"<!doctype", b"<html"))
+
+
+async def _refuse_reason(res):
+    """거절당한 이유. Civitai 가 주는 말을 그대로 쓴다(번역보다 정확하다)."""
+    try:
+        body = await res.json()
+        said = (body or {}).get("message") or ""
+    except Exception:
+        said = ""
+    return said.strip() or _LOGIN_HINT
+
+
 def _safe_component(text):
     """경로를 뚫고 나갈 수 있는 글자를 걷어낸다."""
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(text or "")).strip(" .")
     return cleaned[:120]
 
 
-def _resolve_target(folder, file_name):
-    """<로라 루트>/<folder>/<파일> 경로를 만든다. 루트 밖으로 나가면 거절한다."""
-    roots = folder_paths.get_folder_paths("loras")
+def _archive_root(kind):
+    """워크플로우·와일드카드를 풀어 놓을 자리. 없으면 None.
+
+    워크플로우는 ComfyUI 의 user 폴더 아래에 있다. 자리를 직접 계산하지 않고
+    user_manager 에게 묻는다(사용자를 여럿 쓰는 설정에서도 제 폴더를 보게).
+    """
+    if kind == "workflows":
+        manager = getattr(PromptServer.instance, "user_manager", None)
+        if manager is None:
+            return None
+        try:
+            return manager.get_request_user_filepath(None, "workflows", create_dir=True)
+        except Exception:
+            # 요청 없이 부르면 실패할 수 있다. 기본 사용자 자리로 물러난다.
+            try:
+                return os.path.join(folder_paths.get_user_directory(), "default", "workflows")
+            except Exception:
+                return None
+    if kind == "wildcards":
+        try:
+            from . import wildcards
+            found = wildcards.find_roots()
+        except Exception:
+            return None
+        return found[0] if found else None
+    return None
+
+
+def _archive_folders(kind):
+    """이미 쓰고 있는 하위 폴더 목록. 받을 자리를 고르는 데 쓴다."""
+    root = _archive_root(kind)
+    if not root or not os.path.isdir(root):
+        return []
+    found = set()
+    for folder, dirs, _files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        rel = os.path.relpath(folder, root).replace(os.sep, "/")
+        if rel not in (".", ""):
+            found.add(rel)
+    return sorted(found)
+
+
+def _resolve_target(folder, file_name, kind=models.DEFAULT_KIND):
+    """<루트>/<folder>/<파일> 경로를 만든다. 루트 밖으로 나가면 거절한다."""
+    if kind in ARCHIVE_KINDS:
+        base = _archive_root(kind)
+        roots = [base] if base else []
+    else:
+        roots = models.roots(kind)
     if not roots:
-        raise CivitaiError("로라 폴더가 없음")
+        raise CivitaiError(f"{kind} 폴더가 없음")
     root = os.path.abspath(roots[0])
 
     parts = [_safe_component(p) for p in str(folder or "").replace("\\", "/").split("/")]
@@ -818,9 +1128,9 @@ def _resolve_target(folder, file_name):
     if os.path.commonpath([target_dir, root]) != root:
         raise CivitaiError("폴더가 로라 폴더 밖을 가리킴")
 
-    name = _safe_component(file_name) or "lora.safetensors"
+    name = _safe_component(file_name) or ("download.zip" if kind in ARCHIVE_KINDS else "model.safetensors")
     if not os.path.splitext(name)[1]:
-        name += ".safetensors"
+        name += ".zip" if kind in ARCHIVE_KINDS else ".safetensors"
 
     os.makedirs(target_dir, exist_ok=True)
     # 같은 이름이 있으면 덮지 않고 번호를 붙인다
@@ -842,21 +1152,34 @@ async def _stream_to_file(url, api_key, path, on_progress):
     # 내려받기 주소는 CDN 으로 넘어간다. 그쪽에 Authorization 헤더를 들고 가면
     # 서명과 충돌하므로 키는 쿼리로 붙인다(Civitai 가 권하는 방식).
     params = {"token": api_key} if api_key else None
+    # 로그인해야 받을 수 있는 글은 키로 안 된다. 세션을 등록해 두었으면 같이 든다.
+    headers = {"User-Agent": "comfy_FLA"}
+    session_cookie = _session_cookie()
+    if session_cookie:
+        headers["Cookie"] = session_cookie
 
     async def work(session):
-        async with session.get(url, params=params, headers={"User-Agent": "comfy_FLA"},
-                               timeout=timeout) as res:
+        async with session.get(url, params=params, headers=headers, timeout=timeout) as res:
             if res.status in (401, 403):
-                raise CivitaiError("이 모델은 로그인해야 받을 수 있습니다 — API 키를 등록하세요")
+                raise LoginNeeded(await _refuse_reason(res), had_session=bool(session_cookie))
             if res.status != 200:
                 raise CivitaiError(f"HTTP {res.status}")
+
             total = int(res.headers.get("Content-Length") or 0)
             on_progress(0, total)
             received = 0
+            first = True
             with open(path, "wb") as f:
                 async for chunk in res.content.iter_chunked(DOWNLOAD_CHUNK):
                     if _dl["cancelled"]:
                         raise Cancelled("취소함")
+                    if first:
+                        first = False
+                        # 인증에 걸리면 200 과 함께 로그인 화면이 오기도 한다.
+                        # 그걸 모델 파일로 저장하면 나중에 안 열리는데 파일은
+                        # 멀쩡해 보인다. 첫 조각을 보고 걸러낸다.
+                        if _looks_like_page(res, chunk):
+                            raise LoginNeeded(_LOGIN_HINT)
                     f.write(chunk)
                     received += len(chunk)
                     on_progress(received, total)
@@ -865,6 +1188,116 @@ async def _stream_to_file(url, api_key, path, on_progress):
             return received
 
     return await _with_session(work)
+
+
+# 압축을 풀 때 꺼낼 것. 이것 말고는 버린다(실행 파일이 섞여 들어오지 않게).
+ARCHIVE_KEEP = {
+    "workflows": (".json",),
+    "wildcards": (".txt", ".yaml", ".yml", ".json"),
+}
+# 풀어낸 것 전부의 상한. zip 폭탄으로 디스크를 채우지 않으려고 둔다.
+MAX_EXTRACT_BYTES = 512 * 1024 * 1024
+MAX_EXTRACT_FILES = 2000
+
+
+def _extract_archive(path, root, kind):
+    """받은 zip 에서 쓸 만한 것만 꺼낸다. 꺼낸 상대 경로 목록을 준다.
+
+    zip 안의 이름은 남이 지은 것이라 ../ 로 폴더 밖을 가리킬 수 있다.
+    실제로 만들 경로를 뿌리와 견줘 한 번 더 막는다.
+    """
+    import zipfile
+
+    keep = ARCHIVE_KEEP.get(kind, (".json",))
+    stem = os.path.splitext(os.path.basename(path))[0]
+    # 한 글에 파일이 여럿이면 폴더로 묶어야 섞이지 않는다
+    base = os.path.join(os.path.dirname(path), _safe_component(stem) or "download")
+    made = []
+    written = 0
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = [e for e in archive.infolist()
+                       if not e.is_dir() and os.path.splitext(e.filename)[1].lower() in keep]
+            if not entries:
+                raise CivitaiError("압축 안에 쓸 만한 파일이 없음")
+            if len(entries) > MAX_EXTRACT_FILES:
+                raise CivitaiError(f"압축 안 파일이 너무 많음 ({len(entries)})")
+            # 파일이 하나뿐이면 폴더를 만들지 않고 그 자리에 둔다
+            target_root = os.path.dirname(path) if len(entries) == 1 else base
+
+            for entry in entries:
+                parts = [_safe_component(part) for part in entry.filename.replace(chr(92), "/").split("/")]
+                parts = [part for part in parts if part and part not in (".", "..")]
+                if not parts:
+                    continue
+                out = os.path.abspath(os.path.join(target_root, *parts))
+                if os.path.commonpath([out, os.path.abspath(root)]) != os.path.abspath(root):
+                    continue  # 뿌리 밖을 가리키는 것은 버린다
+                written += entry.file_size
+                if written > MAX_EXTRACT_BYTES:
+                    raise CivitaiError("압축을 풀면 너무 커짐")
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                # 같은 이름이 있으면 덮지 않고 번호를 붙인다
+                head, ext = os.path.splitext(out)
+                index = 2
+                while os.path.exists(out):
+                    out = f"{head} ({index}){ext}"
+                    index += 1
+                with archive.open(entry) as src, open(out, "wb") as dst:
+                    dst.write(src.read())
+                made.append(os.path.relpath(out, root).replace(os.sep, "/"))
+    except zipfile.BadZipFile:
+        raise CivitaiError("압축 파일이 아니거나 깨져 있음")
+
+    return made
+
+
+async def _remember_workflows(names, root, version, model, folder):
+    """받은 워크플로우마다 출처·원본·대표 이미지를 곁에 남긴다.
+
+    한 글(zip) 에 워크플로우가 여럿 들어 있는 일이 흔하다. 모두 같은
+    글에서 왔으므로 같은 출처를 적는다. 새 버전이 나오면 다 같이 걸린다.
+    """
+    from . import workflow_store
+
+    store = workflow_store.root(None, create=True)
+    if not store:
+        return
+
+    owner = model or version.get("model") or {}
+    stamp = {
+        "source": "civitai",
+        "model_id": version.get("modelId") or owner.get("id"),
+        "model_name": owner.get("name") or "",
+        "version_id": version.get("id"),
+        "version_name": version.get("name") or "",
+        "creator": (owner.get("creator") or {}).get("username") or "",
+        "published": version.get("publishedAt") or version.get("createdAt") or "",
+        "folder": folder or "",
+        "got_at": int(time.time()),
+    }
+
+    # 대표 이미지는 한 번만 받아서 모두에게 나눠 쓴다
+    cover = None
+    image = pick_preview(version, still_only=True)
+    if image:
+        try:
+            cover = await _download_image(image["url"])
+        except (CivitaiError, OSError):
+            cover = None
+
+    for name in names:
+        workflow_store.set_meta(store, name, stamp)
+        path = os.path.join(root, *name.split("/"))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                workflow_store.set_base_graph(store, name, json.load(f))
+        except (OSError, ValueError):
+            pass  # 원본을 못 남기면 나중에 두 갈래 머지로 물러선다
+        if cover:
+            blob, ext = cover
+            workflow_store.write_image(store, workflow_store.COVER_DIR, name, blob, ext)
 
 
 async def _write_sidecars(path, version, model, sha256):
@@ -887,9 +1320,17 @@ async def _write_sidecars(path, version, model, sha256):
     _save_metadata(stem + ".metadata.json", data)
 
 
-async def download_version(version_id, folder, api_key, verify=True):
-    """모델 버전 하나를 받아 폴더에 넣고 정보까지 채운다."""
+async def download_version(version_id, folder, api_key, verify=True, kind=None):
+    """버전 하나를 받아 폴더에 넣는다.
+
+    모델(로라·체크포인트)이면 곁다리 정보까지 채운다. 워크플로우·와일드카드는
+    zip 으로 오므로 풀어서 .json/.txt 만 꺼내고 압축 파일은 지운다.
+    """
     version = await _get_json(f"/model-versions/{version_id}", api_key)
+    if not kind:
+        kind = kind_for_type((version.get("model") or {}).get("type")) or models.DEFAULT_KIND
+    if not kind_ok(kind):
+        raise CivitaiError("받아둘 자리를 모르는 종류")
     primary = _primary_file(version)
     if not primary:
         raise CivitaiError("받을 파일이 없음")
@@ -899,7 +1340,7 @@ async def download_version(version_id, folder, api_key, verify=True):
     if not url:
         raise CivitaiError("내려받기 주소가 없음")
 
-    path = _resolve_target(folder, primary.get("name") or f"{version_id}.safetensors")
+    path = _resolve_target(folder, primary.get("name") or f"{version_id}.safetensors", kind)
     part = path + ".part"
 
     _dl["current"] = {
@@ -907,6 +1348,7 @@ async def download_version(version_id, folder, api_key, verify=True):
         "title": (version.get("model") or {}).get("name") or version.get("name") or "",
         "file_name": os.path.basename(path),
         "folder": folder or "/",
+        "kind": kind,
     }
 
     def progress(received, total):
@@ -933,6 +1375,22 @@ async def download_version(version_id, folder, api_key, verify=True):
             pass
         raise
 
+    if kind in ARCHIVE_KINDS:
+        # 압축을 풀고 원본 zip 은 남기지 않는다. 워크플로우 목록에 zip 이
+        # 끼어 있으면 눈에만 걸린다.
+        root = _archive_root(kind)
+        made = _extract_archive(path, root, kind)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        if kind == "workflows":
+            # 어디서 받았는지와 받았을 때의 모습을 남긴다. 나중에 새 버전을
+            # 합칠 때(머지) 이 원본이 있어야 내가 고친 것을 가려낼 수 있다.
+            await _remember_workflows(made, root, version, model, folder)
+        return {"path": root, "files": made, "kind": kind,
+                "file_name": os.path.basename(path), "folder": folder}
+
     model = None
     if version.get("modelId"):
         try:
@@ -944,9 +1402,61 @@ async def download_version(version_id, folder, api_key, verify=True):
     except OSError:
         pass  # 파일은 이미 받았다. 정보는 나중에 다시 채울 수 있다.
 
-    _invalidate_installed()
-    _invalidate_pending()
-    return {"path": path, "file_name": os.path.basename(path), "folder": folder}
+    models.invalidate(kind)
+    invalidate_installed()
+    invalidate_pending()
+    return {"path": path, "file_name": os.path.basename(path), "folder": folder, "kind": kind}
+
+
+def _job_name(job):
+    """오류 줄에 쓸 이름."""
+    return job.get("title") or job.get("path") or str(job.get("version_id") or "?")
+
+
+def _remember_done(job, got=None, error="", login_needed=False):
+    """끝난 것을 관리창에 보여줄 만큼만 남긴다."""
+    _dl["recent"].append({
+        # 막힌 것은 브라우저로 가야 한다. 갈 곳을 함께 남긴다.
+        "url": job.get("url") or "",
+        "login_needed": login_needed,
+        "title": job.get("title") or (got or {}).get("file_name") or "",
+        "file_name": (got or {}).get("file_name") or "",
+        "folder": job.get("folder") or "",
+        "kind": job.get("kind") or (got or {}).get("kind") or "",
+        "source": job.get("source") or "civitai",
+        "error": error,
+        "at": int(time.time()),
+    })
+    del _dl["recent"][:-MAX_DONE]
+
+
+async def _download_one(job, api_key):
+    """대기열의 일 하나. 어디서 받는지에 따라 길이 갈린다."""
+    if job.get("source") == "huggingface":
+        from . import huggingface
+        return await huggingface.grab(job)
+    if job.get("source") == "import":
+        from . import imports
+        return await imports.take(job)
+    return await download_version(job["version_id"], job.get("folder") or "", api_key,
+                                  kind=job.get("kind") or None)
+
+
+def enqueue(job, api_key=None):
+    """받을 것을 줄에 넣는다. 돌고 있지 않으면 깨운다."""
+    global _dl_task
+    import asyncio as _asyncio
+
+    _dl["queue"].append(job)
+    if not _dl["running"]:
+        _dl["running"] = True
+        _dl["cancelled"] = False
+        _dl["done"] = 0
+        _dl["failed"] = 0
+        _dl["errors"] = []
+        _dl["finished_at"] = 0
+        _dl_task = _asyncio.create_task(_download_loop(api_key if api_key is not None else _api_key()))
+    return _public_download()
 
 
 async def _download_loop(api_key):
@@ -956,18 +1466,27 @@ async def _download_loop(api_key):
             _dl["received"] = 0
             _dl["total"] = 0
             try:
-                await download_version(job["version_id"], job.get("folder") or "", api_key)
+                got = await _download_one(job, api_key)
                 _dl["done"] += 1
+                _remember_done(job, got)
             except Cancelled:
                 break
+            except LoginNeeded as e:
+                _dl["failed"] += 1
+                _remember_done(job, error=str(e), login_needed=True)
+                if len(_dl["errors"]) < MAX_ERRORS:
+                    _dl["errors"].append({"name": _job_name(job), "error": str(e),
+                                          "login_needed": True, "url": job.get("url") or ""})
             except CivitaiError as e:
                 _dl["failed"] += 1
+                _remember_done(job, error=str(e))
                 if len(_dl["errors"]) < MAX_ERRORS:
-                    _dl["errors"].append({"name": job.get("title") or job["version_id"], "error": str(e)})
+                    _dl["errors"].append({"name": _job_name(job), "error": str(e)})
             except Exception as e:
                 _dl["failed"] += 1
+                _remember_done(job, error=repr(e))
                 if len(_dl["errors"]) < MAX_ERRORS:
-                    _dl["errors"].append({"name": job.get("title") or job["version_id"], "error": repr(e)})
+                    _dl["errors"].append({"name": _job_name(job), "error": repr(e)})
     finally:
         _dl["running"] = False
         _dl["current"] = None
@@ -989,28 +1508,29 @@ async def post_civitai_download(request):
     except (TypeError, ValueError):
         return web.json_response({"ok": False, "error": "Bad version"}, status=400)
 
-    _dl["queue"].append({
+    kind = body.get("kind") or ""
+    if kind and not kind_ok(kind):
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+
+    return web.json_response({"ok": True, "download": enqueue({
+        "source": "civitai",
         "version_id": version_id,
         "folder": body.get("folder") or "",
         "title": body.get("title") or "",
-    })
-
-    if not _dl["running"]:
-        _dl["running"] = True
-        _dl["cancelled"] = False
-        _dl["done"] = 0
-        _dl["failed"] = 0
-        _dl["errors"] = []
-        _dl["finished_at"] = 0
-        _dl_task = asyncio.create_task(_download_loop(_api_key()))
-
-    return web.json_response({"ok": True, "download": _public_download()})
+        # 막혔을 때 화면이 "Civitai 에서 받기" 로 보낼 곳
+        "url": f"https://civitai.com/models/{body['model_id']}" if body.get("model_id") else "",
+        # 안 주면 받을 때 Civitai 가 알려주는 종류로 정한다
+        "kind": kind,
+    })})
 
 
 def _public_download():
     return {
         "running": _dl["running"],
         "queued": len(_dl["queue"]),
+        # 무엇이 기다리는지. 관리창이 목록으로 보여준다.
+        "queue": [dict(job) for job in _dl["queue"]],
+        "recent": list(reversed(_dl["recent"])),
         "current": _dl["current"],
         "received": _dl["received"],
         "total": _dl["total"],

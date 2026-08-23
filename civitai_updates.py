@@ -29,7 +29,8 @@ from server import PromptServer
 
 import folder_paths
 
-from .api import _load_metadata, _metadata_path
+from . import models
+from .api import _load_metadata
 from .civitai import (
     MAX_ERRORS,
     REQUEST_GAP,
@@ -39,6 +40,7 @@ from .civitai import (
     _get_json,
     _installed_index,
     _trim_version,
+    kind_ok,
     fetch_model,
     library_folders,
 )
@@ -47,6 +49,13 @@ routes = PromptServer.instance.routes
 
 # 결과는 파일에 남긴다. 창을 닫았다 열어도 지난 결과를 다시 보여주려고.
 STATE_PATH = os.path.join(os.path.dirname(__file__), "civitai_updates.json")
+
+
+def _state_path(kind):
+    """종류별 저장 자리. 로라는 쓰던 파일을 그대로 쓴다(지금 결과를 잃지 않게)."""
+    if kind == models.DEFAULT_KIND:
+        return STATE_PATH
+    return os.path.join(os.path.dirname(__file__), f"civitai_updates_{kind}.json")
 # 제작자 한 명당 한 번에 훑는 모델 수(Civitai 상한이 100)
 CREATOR_LIMIT = 100
 # 카드에 곁들여 보여줄 다른 후보 수
@@ -182,23 +191,23 @@ def variant_of(text):
 
 # ---------------------------------------------------------------- 저장
 
-_state = None
+_state = {}
 
 
-def _read_state():
-    global _state
-    if _state is not None:
-        return _state
+def _read_state(kind=models.DEFAULT_KIND):
+    if kind in _state:
+        return _state[kind]
+    path = _state_path(kind)
     data = {}
-    if os.path.isfile(STATE_PATH):
+    if os.path.isfile(path):
         try:
-            with open(STATE_PATH, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 data = loaded
         except (OSError, ValueError):
             data = {}
-    _state = {
+    _state[kind] = {
         "items": data.get("items") if isinstance(data.get("items"), list) else [],
         "ignored": data.get("ignored") if isinstance(data.get("ignored"), list) else [],
         # 하위 모델 정리에서 "그대로 둠" 으로 찍은 것
@@ -206,16 +215,17 @@ def _read_state():
         "checked_at": data.get("checked_at") or 0,
         "deep": data.get("deep") is True,
     }
-    return _state
+    return _state[kind]
 
 
-def _write_state():
-    state = _read_state()
-    temp = STATE_PATH + ".tmp"
+def _write_state(kind=models.DEFAULT_KIND):
+    state = _read_state(kind)
+    path = _state_path(kind)
+    temp = path + ".tmp"
     try:
         with open(temp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
-        os.replace(temp, STATE_PATH)
+        os.replace(temp, path)
     except OSError:
         pass  # 결과를 못 남겨도 이번 화면은 멀쩡하다
 
@@ -256,14 +266,15 @@ def _reset_progress(total, deep):
         "errors": [],
         "finished_at": 0,
         "deep": deep,
+        "kind": models.DEFAULT_KIND,
     })
 
 
-def _targets():
-    """확인할 로라. Civitai 정보가 있는 것만 본다(없으면 견줄 대상이 없다)."""
+def _targets(kind=models.DEFAULT_KIND):
+    """확인할 파일. Civitai 정보가 있는 것만 본다(없으면 견줄 대상이 없다)."""
     names = []
-    for name in folder_paths.get_filename_list("loras"):
-        _, metadata_path = _metadata_path(name)
+    for name in models.names(kind):
+        _, metadata_path = models.paths(kind, name)
         if metadata_path is None:
             continue
         metadata = _load_metadata(metadata_path)
@@ -301,9 +312,10 @@ def _pick_version(model, variant):
     return None
 
 
-async def _check_one(name, api_key, deep, model_cache, creator_cache, hashes, names, folders):
-    """로라 하나. 새 버전이 있으면 카드 하나 분량을 돌려준다."""
-    _, metadata_path = _metadata_path(name)
+async def _check_one(name, api_key, deep, model_cache, creator_cache, hashes, names, folders,
+                     model_kind=models.DEFAULT_KIND):
+    """파일 하나. 새 버전이 있으면 카드 하나 분량을 돌려준다."""
+    _, metadata_path = models.paths(model_kind, name)
     metadata = _load_metadata(metadata_path)
     block = metadata.get("civitai") or {}
     model_id = metadata.get("model_id") or block.get("modelId")
@@ -357,7 +369,7 @@ async def _check_one(name, api_key, deep, model_cache, creator_cache, hashes, na
 
     cards = []
     for kind, version, owner, step in found:
-        card = _trim_version(version, hashes, names, owner, folders, max_images=1)
+        card = _trim_version(version, hashes, names, owner, folders, 1, model_kind)
         card["model_id"] = owner.get("id")
         card["model_name"] = owner.get("name") or ""
         card["kind"] = kind
@@ -392,12 +404,12 @@ async def _check_one(name, api_key, deep, model_cache, creator_cache, hashes, na
     }
 
 
-async def _scan(names, api_key, deep):
-    state = _read_state()
+async def _scan(names, api_key, deep, model_kind=models.DEFAULT_KIND):
+    state = _read_state(model_kind)
     model_cache = {}
     creator_cache = {}
-    hashes, installed_names = _installed_index()
-    folders = library_folders()
+    hashes, installed_names = _installed_index(model_kind)
+    folders = library_folders(model_kind)
     items = []
     try:
         for name in names:
@@ -406,7 +418,7 @@ async def _scan(names, api_key, deep):
             _progress["current"] = name
             try:
                 item = await _check_one(name, api_key, deep, model_cache, creator_cache,
-                                        hashes, installed_names, folders)
+                                        hashes, installed_names, folders, model_kind)
                 if item:
                     items.append(item)
                     _progress["found"] += 1
@@ -430,17 +442,18 @@ async def _scan(names, api_key, deep):
         state["items"] = items
         state["checked_at"] = int(time.time())
         state["deep"] = deep
-        _write_state()
+        _write_state(model_kind)
 
 
 # ---------------------------------------------------------------- 라우트
 
 
-def _public(with_items=True):
-    state = _read_state()
+def _public(with_items=True, kind=models.DEFAULT_KIND):
+    state = _read_state(kind)
     ignored = set(state["ignored"])
     body = {
         "ok": True,
+        "kind": kind,
         "progress": dict(_progress),
         "checked_at": state["checked_at"],
         "deep": state["deep"],
@@ -453,19 +466,29 @@ def _public(with_items=True):
             copy["ignored"] = copy["key"] in ignored
             items.append(copy)
         body["items"] = items
-        body["candidates"] = len(_targets())
+        body["candidates"] = len(_targets(kind))
     return body
+
+
+def _kind_of(source):
+    """요청에서 종류를 읽는다. 없으면 로라로 본다(옛 화면과 맞추려고)."""
+    kind = (source.get("kind") or models.DEFAULT_KIND) if isinstance(source, dict) else models.DEFAULT_KIND
+    return kind if models.known(kind) else None
 
 
 @routes.get("/fla/civitai/updates")
 async def get_civitai_updates(request):
-    return web.json_response(_public())
+    kind = _kind_of(dict(request.query))
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    return web.json_response(_public(kind=kind))
 
 
 @routes.get("/fla/civitai/updates/status")
 async def get_civitai_updates_status(request):
     """진행률만. 도는 동안 자주 물어보는 쪽이라 목록은 빼고 준다."""
-    return web.json_response(_public(with_items=False))
+    kind = _kind_of(dict(request.query)) or models.DEFAULT_KIND
+    return web.json_response(_public(with_items=False, kind=kind))
 
 
 @routes.post("/fla/civitai/updates/scan")
@@ -480,16 +503,20 @@ async def post_civitai_updates_scan(request):
     except Exception:
         body = {}
     deep = body.get("deep") is not False
+    kind = _kind_of(body)
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
 
-    names = _targets()
+    names = _targets(kind)
     _reset_progress(len(names), deep)
+    _progress["kind"] = kind
     if not names:
         _progress["running"] = False
         _progress["finished_at"] = int(time.time())
-        return web.json_response(_public())
+        return web.json_response(_public(kind=kind))
 
-    _task = asyncio.create_task(_scan(names, _api_key(), deep))
-    return web.json_response(_public(with_items=False))
+    _task = asyncio.create_task(_scan(names, _api_key(), deep, kind))
+    return web.json_response(_public(with_items=False, kind=kind))
 
 
 @routes.post("/fla/civitai/updates/cancel")
@@ -510,23 +537,33 @@ async def post_civitai_updates_ignore(request):
     if not isinstance(key, str) or not key:
         return web.json_response({"ok": False, "error": "Bad key"}, status=400)
 
-    state = _read_state()
+    kind = _kind_of(body)
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    state = _read_state(kind)
     ignore = body.get("ignore") is not False
     state["ignored"] = [k for k in state["ignored"] if k != key]
     if ignore:
         state["ignored"].append(key)
-    _write_state()
+    _write_state(kind)
     return web.json_response({"ok": True, "ignored": ignore})
 
 
 @routes.post("/fla/civitai/updates/clear")
 async def post_civitai_updates_clear(request):
     """찾은 목록을 지운다(다시 확인하기 전까지 빈 화면)."""
-    state = _read_state()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kind = _kind_of(body)
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    state = _read_state(kind)
     state["items"] = []
     state["checked_at"] = 0
-    _write_state()
-    return web.json_response(_public())
+    _write_state(kind)
+    return web.json_response(_public(kind=kind))
 
 
 # ---------------------------------------------------------------- 하위 모델 정리
@@ -538,11 +575,11 @@ async def post_civitai_updates_clear(request):
 # (되돌릴 수 없는 일이라 한 번 더 물어본 뒤에).
 
 
-def _entries():
-    """가진 로라를 견줄 수 있는 꼴로 모은다. 이름은 한 번만 나눈다."""
+def _entries(kind=models.DEFAULT_KIND):
+    """가진 파일을 견줄 수 있는 꼴로 모은다. 이름은 한 번만 나눈다."""
     out = []
-    for name in folder_paths.get_filename_list("loras"):
-        full, metadata_path = _metadata_path(name)
+    for name in models.names(kind):
+        full, metadata_path = models.paths(kind, name)
         if full is None:
             continue
         metadata = _load_metadata(metadata_path)
@@ -583,10 +620,10 @@ def _card(entry, extra=None):
     return card
 
 
-def older_items():
+def older_items(kind=models.DEFAULT_KIND):
     """더 새 버전을 이미 가진 파일들. 새 것부터 앞에 달아 준다."""
-    entries = _entries()
-    kept = set(_read_state()["kept"])
+    entries = _entries(kind)
+    kept = set(_read_state(kind)["kept"])
     items = []
     for old in entries:
         newer = []
@@ -618,13 +655,17 @@ def older_items():
 
 @routes.get("/fla/civitai/older")
 async def get_civitai_older(request):
-    items = older_items()
+    kind = _kind_of(dict(request.query))
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    items = older_items(kind)
     return web.json_response({
         "ok": True,
+        "kind": kind,
         "items": items,
         # 지우면 남는 자리(그대로 두기로 한 것은 빼고)
         "free": sum(item["size"] for item in items if not item["ignored"]),
-        "library": len(folder_paths.get_filename_list("loras")),
+        "library": len(models.names(kind)),
     })
 
 
@@ -639,10 +680,13 @@ async def post_civitai_older_keep(request):
     if not isinstance(key, str) or not key:
         return web.json_response({"ok": False, "error": "Bad key"}, status=400)
 
-    state = _read_state()
+    kind = _kind_of(body)
+    if kind is None:
+        return web.json_response({"ok": False, "error": "Unknown kind"}, status=404)
+    state = _read_state(kind)
     keep = body.get("keep") is not False
     state["kept"] = [k for k in state["kept"] if k != key]
     if keep:
         state["kept"].append(key)
-    _write_state()
+    _write_state(kind)
     return web.json_response({"ok": True, "kept": keep})

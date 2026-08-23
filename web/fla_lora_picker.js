@@ -2,6 +2,7 @@ import { t } from "./fla_i18n.js";
 import { releaseWidgetCapture, releaseWidgetCaptureSoon } from "./fla_widget_mouse.js";
 import { civitaiStatus, fetchLoraInfo, openCivitaiPanel } from "./fla_civitai.js";
 import { clearCache, createModelDetail } from "./fla_civitai_detail.js";
+import { openContextMenu, toast as menuToast } from "./fla_manage_menu.js";
 
 // 검색을 미루는 시간(ms). 이만큼 입력이 없으면 그때 한 번 거른다.
 const SEARCH_DELAY = 300;
@@ -294,12 +295,20 @@ function copyChip(text) {
 /** 모델 상세 창. 카드에서 우클릭하면 열린다.
  *  blurAdult 가 참이면 성인 등급 예시 이미지를 흐리게 보여준다.
  *  onInfoChanged 는 Civitai 에서 정보를 새로 받아 제목·태그까지 바뀌었을 때 부른다. */
+/** 로라 상세 창. 옛 이름 그대로 둔다(로라 쪽이 이 이름으로 부른다). */
 export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = null, onInfoChanged = null) {
+    return showModelDetail("loras", name, blurAdult, onPreviewChanged, onInfoChanged);
+}
+
+/** 모델 상세 창. 로라도 체크포인트도 같은 창을 쓴다. */
+export async function showModelDetail(kind, name, blurAdult = true, onPreviewChanged = null,
+                                      onInfoChanged = null) {
     addStyles();
+    const q = `kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
 
     let data;
     try {
-        const res = await fetch(`/fla/lora-detail?name=${encodeURIComponent(name)}`);
+        const res = await fetch(`/fla/model-detail?${q}`);
         if (!res.ok) return;
         data = await res.json();
     } catch (e) {
@@ -379,7 +388,7 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
         }
         // 캐시 무효화용 값이 바뀌면 브라우저가 새 파일을 받아온다
         const stamp = result.stamp ?? Date.now();
-        data.preview = `/fla/lora-preview?name=${encodeURIComponent(name)}&v=${stamp}`;
+        data.preview = `/fla/model-preview?${q}&v=${stamp}`;
         data.preview_type = result.preview_type ?? data.preview_type ?? "image";
         // 목록 쪽 캐시도 같이 고쳐둔다
         const cached = (await library()).find((it) => it.name === name);
@@ -397,7 +406,7 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
     async function reload() {
         let fresh;
         try {
-            const res = await fetch(`/fla/lora-detail?name=${encodeURIComponent(name)}`);
+            const res = await fetch(`/fla/model-detail?${q}`);
             if (!res.ok) return;
             fresh = await res.json();
         } catch (e) {
@@ -454,9 +463,10 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
             const file = picker.files?.[0];
             if (!file) return;
             const form = new FormData();
+            form.append("kind", kind);
             form.append("name", name);
             form.append("file", file);
-            applyPreview(() => fetch("/fla/lora-preview-upload", { method: "POST", body: form }));
+            applyPreview(() => fetch("/fla/model-preview-upload", { method: "POST", body: form }));
         };
         const upload = document.createElement("button");
         upload.className = "fla-lp-dt-link";
@@ -563,10 +573,10 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
             setBtn.onclick = (event) => {
                 event.stopPropagation();
                 setBtn.disabled = true;
-                applyPreview(() => fetch("/fla/lora-preview-set", {
+                applyPreview(() => fetch("/fla/model-preview-set", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name, url: shot.url }),
+                    body: JSON.stringify({ kind, name, url: shot.url }),
                 })).finally(() => { setBtn.disabled = false; });
             };
             frame.appendChild(setBtn);
@@ -762,9 +772,10 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
 
         const tags = document.createElement("div");
         tags.className = "fla-lp-vr-tags";
-        const tag = (text, kind) => {
+        // 바깥의 kind(모델 종류)를 가리지 않게 다른 이름을 쓴다
+        const tag = (text, tone) => {
             const chip = document.createElement("span");
-            chip.className = `fla-lp-vr-tag${kind ? " " + kind : ""}`;
+            chip.className = `fla-lp-vr-tag${tone ? " " + tone : ""}`;
             chip.textContent = text;
             tags.appendChild(chip);
         };
@@ -843,10 +854,10 @@ export async function showLoraDetail(name, blurAdult = true, onPreviewChanged = 
         button.disabled = true;
         let result;
         try {
-            const res = await fetch("/fla/lora-delete", {
+            const res = await fetch("/fla/model-delete", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name: target }),
+                body: JSON.stringify({ kind, name: target }),
             });
             result = await res.json();
         } catch (e) {
@@ -1127,6 +1138,92 @@ export async function pickLora() {
             const count = document.createElement("span"); count.className = "fla-lp-count"; count.textContent = `${shown} / ${total}`; path.appendChild(count);
         }
 
+        /** 카드 하나에 딸린 관리 메뉴. */
+        function openLoraMenu(item, event) {
+            openContextMenu([
+                [t("detailMore"), () => showLoraDetail(item.name, blurAdult, render, reloadLibrary)],
+                [item.has_info ? t("mmRefetch") : t("mmFetch"), () => fetchOne(item)],
+                [null],
+                [t("applyLora"), () => close(item.name)],
+                [t("mmCopyName"), () => copyName(item)],
+                [t("mmSetPreview"), () => uploadPreview(item)],
+                [t("mmReveal"), () => revealOne(item)],
+                [null],
+                [t("delete"), () => removeOne(item), true],
+            ], event);
+        }
+
+        /** 이 로라 하나만 Civitai 에서 정보와 대표 이미지를 받아온다. */
+        async function fetchOne(item) {
+            menuToast(t("mmFetching"));
+            const done = await fetchLoraInfo(item.name, "loras");
+            if (done) await reloadLibrary();
+        }
+
+        async function copyName(item) {
+            try {
+                await navigator.clipboard.writeText(item.name);
+                menuToast(t("mmCopied"));
+            } catch (e) {
+                menuToast(item.name, true);
+            }
+        }
+
+        function uploadPreview(item) {
+            const picker = document.createElement("input");
+            picker.type = "file";
+            picker.accept = "image/*,video/mp4,video/webm";
+            picker.onchange = async () => {
+                const file = picker.files?.[0];
+                if (!file) return;
+                const form = new FormData();
+                form.append("kind", "loras");
+                form.append("name", item.name);
+                form.append("file", file);
+                try {
+                    const res = await fetch("/fla/model-preview-upload", { method: "POST", body: form });
+                    const data = await res.json();
+                    if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+                    menuToast(t("mmPreviewDone"));
+                    await reloadLibrary();
+                } catch (e) {
+                    menuToast(t("mmPreviewFail") + e.message, true);
+                }
+            };
+            picker.click();
+        }
+
+        async function post(url, body) {
+            const res = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            let data = {};
+            try { data = await res.json(); } catch (e) { /* 본문이 없을 수도 있다 */ }
+            if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+            return data;
+        }
+
+        async function revealOne(item) {
+            try {
+                await post("/fla/model-reveal", { kind: "loras", name: item.name });
+            } catch (e) {
+                menuToast(t("mmRevealFail") + e.message, true);
+            }
+        }
+
+        async function removeOne(item) {
+            if (!confirm(t("mmDeleteConfirm").replace("{name}", item.name))) return;
+            try {
+                await post("/fla/model-delete", { kind: "loras", name: item.name });
+                menuToast(t("mmDeleted"));
+                await reloadLibrary();
+            } catch (e) {
+                menuToast(t("mmDeleteFail") + e.message, true);
+            }
+        }
+
         function render() {
             const query = input.value.trim().toLocaleLowerCase();
             const scoped = items.filter((item) => includeChildren ? contains(item, folder) : item.folder === folder);
@@ -1143,12 +1240,11 @@ export async function pickLora() {
             for (const item of shown) {
                 const card = document.createElement("div"); card.className = "fla-lp-card"; card.title = `${item.name}
 ${t("detailMore")}: ${t("hintRightClick")}`; card.tabIndex = 0; card.setAttribute("role", "button"); card.onclick = () => close(item.name); card.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") close(item.name); };
-                // 우클릭하면 모델 상세 창을 연다(고르지는 않는다)
+                // 우클릭하면 관리 메뉴를 연다. 체크포인트·워크플로우 창과 같은 모양이다.
                 card.oncontextmenu = (event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    // 대표 이미지를 바꾸면 목록도 새로 그린다
-                    showLoraDetail(item.name, blurAdult, render, reloadLibrary);
+                    openLoraMenu(item, event);
                 };
                 // 토글이 켜져 있고, 성인물이며, 아직 "보기" 로 열지 않은 카드만 가린다
                 const hide = blurAdult && item.adult && !revealed.has(item.name);

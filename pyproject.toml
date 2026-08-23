@@ -1,7 +1,7 @@
 [project]
 name = "fastloramaster"
-description = "Pair prompts with their LoRAs. Theme presets shared as JSON, per-node checklists, wildcard autocomplete, and a resolution picker with ratio lock."
-version = "1.4.0"
+description = "Pair prompts with their LoRAs on the canvas, then manage the rest from one panel — LoRAs, checkpoints, workflows and wildcards, with Civitai and Hugging Face search, server-side downloads, update checks, and a three-way merge that upgrades a workflow without losing your edits."
+version = "1.5.0"
 license = "MIT"
 
 # classifiers = [

@@ -7,7 +7,7 @@ import { attachWildcardAutocomplete } from "./fla_wildcard_autocomplete.js";
 import {
     ROW_HEIGHT, LAYOUT_PAD, api, findWidget, notify, pickFromList, drawRoundedRect,
     drawToggle, fitText, inBounds, isNodeOff,
-    buildLoraBox, paint,
+    buildLoraBox, paint, insertAfter, openPresetFolder, relinkLoras,
 } from "./fla_lora_ui.js";
 
 const NODE_NAME = "SN1000LoraTheme";
@@ -117,84 +117,6 @@ function splitPath(input) {
     if (parts.length === 0) return { theme: "", name: "" };
     if (parts.length === 1) return { theme: "", name: parts[0] };
     return { theme: parts[0], name: parts.slice(1).join(" ") };
-}
-
-/** 이 노드 뒤에 같은 노드를 하나 더 만들어 체인으로 끼워 넣는다.
- *
- *  이 노드의 출력(MODEL/CLIP/prompt)에 걸려 있던 링크를 모두 새 노드의
- *  같은 출력으로 옮기고, 이 노드 → 새 노드로 다시 이어 붙인다.
- *  결과적으로 흐름이 끊기지 않고 사이에 한 칸이 늘어난 모양이 된다.
- *
- *      전:  A ─▶ [이 노드] ─▶ C
- *      후:  A ─▶ [이 노드] ─▶ [새 노드] ─▶ C
- */
-function insertAfter(node) {
-    const graph = node.graph ?? app.graph;
-    if (!graph) return null;
-
-    const fresh = LiteGraph.createNode(NODE_NAME);
-    if (!fresh) return null;
-
-    // 겹치지 않도록 이 노드 바로 오른쪽에 놓는다
-    const GAP = 40;
-    fresh.pos = [
-        node.pos[0] + (node.size?.[0] ?? 400) + GAP,
-        node.pos[1],
-    ];
-    graph.add(fresh);
-
-    // 폭은 원본을 따라가는 편이 체인이 가지런해 보인다
-    if (node.size?.[0]) fresh.size[0] = node.size[0];
-
-    // 이 노드의 출력과 새 노드의 입력을 짝지어 준다.
-    // 이름이 서로 다르므로(MODEL→model, prompt→prompt_in) 표로 둔다.
-    const PAIRS = [
-        ["MODEL", "model"],
-        ["CLIP", "clip"],
-        ["prompt", "prompt_in"],
-    ];
-
-    for (const [outName, inName] of PAIRS) {
-        const slot = node.findOutputSlot(outName);
-        if (slot < 0) continue;
-        const output = node.outputs[slot];
-
-        // 원래 이 출력이 향하던 곳들을 먼저 적어둔다.
-        // 아래에서 연결을 바꾸면 links 배열이 변하므로 미리 복사한다.
-        const targets = [];
-        for (const linkId of (output.links ?? []).slice()) {
-            const link = graph.links?.[linkId];
-            if (!link) continue;
-            const target = graph.getNodeById(link.target_id);
-            if (target) targets.push([target, link.target_slot]);
-        }
-
-        const freshIn = fresh.findInputSlot(inName);
-        const freshOut = fresh.findOutputSlot(outName);
-        if (freshIn < 0 || freshOut < 0) continue;
-
-        // 새 노드 → 원래 가던 곳들.
-        // 입력 슬롯은 하나만 받으므로 이 연결이 옛 링크를 밀어낸다.
-        for (const [target, targetSlot] of targets) {
-            fresh.connect(freshOut, target, targetSlot);
-        }
-
-        // 이 노드 → 새 노드
-        node.connect(slot, fresh, freshIn);
-    }
-
-    // 테마만 맞춰준다. 프리셋·프롬프트·로라는 빈 상태로 둔다.
-    // onNodeCreated 가 100ms 뒤 프리셋 목록을 읽으므로 그 전에 값을 넣어두면
-    // 새 노드가 같은 테마의 목록을 그대로 받아온다.
-    const themeW = findWidget(node, "theme");
-    const freshTheme = findWidget(fresh, "theme");
-    if (themeW && freshTheme && themeW.value !== NONE) {
-        freshTheme.options.values = (themeW.options?.values ?? []).slice();
-        freshTheme.value = themeW.value;
-    }
-
-    graph.setDirtyCanvas(true, true);
-    return fresh;
 }
 
 // 구역별 색. 로라 영역을 시각적으로 묶어준다.
@@ -690,7 +612,16 @@ app.registerExtension({
             // 이 노드 뒤에 같은 노드를 하나 더 붙인다.
             // 프리셋을 여러 개 겹쳐 쓸 때 선을 일일이 잇지 않아도 되게 한다.
             const actChain = () => {
-                const fresh = insertAfter(node);
+                // 테마만 맞춰준다. 프리셋·프롬프트·로라는 빈 상태로 둔다.
+                // onNodeCreated 가 100ms 뒤 프리셋 목록을 읽으므로 그 전에 넣어두면
+                // 새 노드가 같은 테마의 목록을 그대로 받아온다.
+                const fresh = insertAfter(node, NODE_NAME, (made) => {
+                    const freshTheme = findWidget(made, "theme");
+                    if (freshTheme && themeW.value !== NONE) {
+                        freshTheme.options.values = (themeW.options?.values ?? []).slice();
+                        freshTheme.value = themeW.value;
+                    }
+                });
                 if (!fresh) {
                     notify(t("chainFailed"), true);
                     return;
@@ -700,13 +631,14 @@ app.registerExtension({
 
             // 지금 고른 테마 폴더를 파일 탐색기로 연다.
             // ComfyUI 가 도는 PC 에서 열리므로 원격 접속 중이면 안내만 한다.
-            const actOpenFolder = async () => {
-                const theme = findWidget(node, "theme")?.value ?? "";
-                try {
-                    await post("/fla/open-folder", { theme });
-                } catch (e) {
-                    notify(t("openFolderFailed") + e.message, true);
-                }
+            const actOpenFolder = () => openPresetFolder(findWidget(node, "theme")?.value ?? "");
+
+            // 끊긴 로라 경로를 지금 내 폴더에 있는 파일로 다시 맞춘다.
+            // 남의 워크플로를 열었거나 로라를 다른 폴더로 옮겼을 때 쓴다.
+            const actRelink = async () => {
+                if (!await relinkLoras(node.flaLoras)) return;
+                syncHidden(node);
+                rebuildLoraWidgets(node);
             };
 
             // 노드 추가 / 새로만들기 / 이름 바꾸기 / 삭제를 옵션 하나에 모은다.
@@ -716,6 +648,7 @@ app.registerExtension({
                 ["✨ " + t("newPreset"), actNew],
                 ["✏ " + t("rename"), actRename],
                 ["📂 " + t("openFolder"), actOpenFolder],
+                ["🔗 " + t("relinkLoras"), actRelink],
                 ["🗑 " + t("remove"), actDelete],
             ];
 

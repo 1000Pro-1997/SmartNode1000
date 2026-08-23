@@ -253,6 +253,178 @@ export function pickFromList(list, event) {
     });
 }
 
+/** 요약 한 줄과 자세한 내용을 함께 띄운다.
+ *  토스트를 못 쓰면 대화상자로 대신한다(그 전에 위젯 캡처를 풀어준다). */
+export function notifyLong(summary, detail, severity = "success") {
+    const toast = app.extensionManager?.toast;
+    if (toast?.add) {
+        toast.add({ severity, summary, detail, life: 7000 });
+        return;
+    }
+    releaseWidgetCaptureSoon();
+    alert(detail ? `${summary}\n\n${detail}` : summary);
+}
+
+/** 이 노드 뒤에 같은 노드를 하나 더 만들어 체인으로 끼워 넣는다.
+ *
+ *  이 노드의 출력(MODEL/CLIP/prompt)에 걸려 있던 링크를 모두 새 노드의
+ *  같은 출력으로 옮기고, 이 노드 → 새 노드로 다시 이어 붙인다.
+ *  결과적으로 흐름이 끊기지 않고 사이에 한 칸이 늘어난 모양이 된다.
+ *
+ *      전:  A ─▶ [이 노드] ─▶ C
+ *      후:  A ─▶ [이 노드] ─▶ [새 노드] ─▶ C
+ *
+ *  ready 를 주면 연결을 마친 새 노드를 넘겨준다(값을 물려줄 때 쓴다).
+ */
+export function insertAfter(node, nodeName, ready) {
+    const graph = node.graph ?? app.graph;
+    if (!graph) return null;
+
+    const fresh = LiteGraph.createNode(nodeName);
+    if (!fresh) return null;
+
+    // 겹치지 않도록 이 노드 바로 오른쪽에 놓는다
+    const GAP = 40;
+    fresh.pos = [
+        node.pos[0] + (node.size?.[0] ?? 400) + GAP,
+        node.pos[1],
+    ];
+    graph.add(fresh);
+
+    // 폭은 원본을 따라가는 편이 체인이 가지런해 보인다
+    if (node.size?.[0]) fresh.size[0] = node.size[0];
+
+    // 이 노드의 출력과 새 노드의 입력을 짝지어 준다.
+    // 이름이 서로 다르므로(MODEL→model, prompt→prompt_in) 표로 둔다.
+    const PAIRS = [
+        ["MODEL", "model"],
+        ["CLIP", "clip"],
+        ["prompt", "prompt_in"],
+    ];
+
+    for (const [outName, inName] of PAIRS) {
+        const slot = node.findOutputSlot(outName);
+        if (slot < 0) continue;
+        const output = node.outputs[slot];
+
+        // 원래 이 출력이 향하던 곳들을 먼저 적어둔다.
+        // 아래에서 연결을 바꾸면 links 배열이 변하므로 미리 복사한다.
+        const targets = [];
+        for (const linkId of (output.links ?? []).slice()) {
+            const link = graph.links?.[linkId];
+            if (!link) continue;
+            const target = graph.getNodeById(link.target_id);
+            if (target) targets.push([target, link.target_slot]);
+        }
+
+        const freshIn = fresh.findInputSlot(inName);
+        const freshOut = fresh.findOutputSlot(outName);
+        if (freshIn < 0 || freshOut < 0) continue;
+
+        // 새 노드 → 원래 가던 곳들.
+        // 입력 슬롯은 하나만 받으므로 이 연결이 옛 링크를 밀어낸다.
+        for (const [target, targetSlot] of targets) {
+            fresh.connect(freshOut, target, targetSlot);
+        }
+
+        // 이 노드 → 새 노드
+        node.connect(slot, fresh, freshIn);
+    }
+
+    ready?.(fresh);
+    graph.setDirtyCanvas(true, true);
+    return fresh;
+}
+
+/** 프리셋 폴더를 파일 탐색기로 연다(ComfyUI 가 도는 PC 에서 열린다).
+ *  테마를 주면 그 테마 폴더를, 없으면 presets 뿌리를 연다. */
+export async function openPresetFolder(theme = "") {
+    try {
+        await api("/fla/open-folder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ theme }),
+        });
+    } catch (e) {
+        notify(t("openFolderFailed") + e.message, true);
+    }
+}
+
+/** 로라 경로를 지금 내 폴더에 있는 파일로 다시 맞춘다.
+ *
+ *  워크플로에 적힌 경로는 그것을 만든 사람의 폴더 구조를 따른다. 남의
+ *  워크플로를 열거나 내가 로라를 옮기면 같은 파일을 가지고 있어도 연결이
+ *  끊긴다. 어디로 이어야 하는지는 서버가 고르고(/fla/lora-resolve),
+ *  여기서는 고른 결과를 로라 목록에 넣고 무엇이 바뀌었는지 알린다.
+ *
+ *  loras 는 { path } 를 가진 객체 배열이다. 그 자리에서 고친다.
+ *  하나라도 바뀌었으면 true — 부르는 쪽이 다시 그리면 된다.
+ */
+export async function relinkLoras(loras) {
+    const list = (loras ?? []).filter((l) => l && typeof l.path === "string" && l.path);
+    if (!list.length) {
+        notify(t("relinkNoLoras"));
+        return false;
+    }
+
+    let results;
+    try {
+        const res = await api("/fla/lora-resolve", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths: [...new Set(list.map((l) => l.path))] }),
+        });
+        results = res.results ?? [];
+    } catch (e) {
+        notify(t("relinkFailed") + e.message, true);
+        return false;
+    }
+
+    const found = new Map(results.map((r) => [r.path, r]));
+    let moved = 0;
+    const upgraded = [];
+    const missing = [];
+
+    for (const lora of list) {
+        const info = found.get(lora.path);
+        if (!info || info.status === "ok") continue;
+        if (info.status === "missing" || !info.name) {
+            if (!missing.includes(lora.path)) missing.push(lora.path);
+            continue;
+        }
+        lora.path = info.name;
+        if (info.status === "upgraded") upgraded.push(info);
+        else moved += 1;
+    }
+
+    if (!moved && !upgraded.length && !missing.length) {
+        notify(t("relinkNone"));
+        return false;
+    }
+
+    // 바뀐 것과 못 찾은 것을 한 번에 보여준다.
+    // 상위 버전으로 바꾼 것은 내가 고른 로라가 아니므로 이름까지 밝힌다.
+    const lines = [];
+    if (moved) lines.push(t("relinkMoved", moved));
+    if (upgraded.length) {
+        lines.push(t("relinkUpgraded", upgraded.length));
+        for (const info of upgraded) {
+            const step = info.from_ver && info.to_ver
+                ? ` (${info.from_ver} → ${info.to_ver})`
+                : "";
+            lines.push(`  ${prettyLora(info.path)} → ${prettyLora(info.name)}${step}`);
+        }
+    }
+    if (missing.length) {
+        lines.push(t("relinkMissing", missing.length));
+        for (const path of missing) lines.push(`  ${prettyLora(path)}`);
+    }
+
+    notifyLong(t("relinkDone"), lines.join("\n"),
+        missing.length ? "warn" : "success");
+    return moved + upgraded.length > 0;
+}
+
 export function drawRoundedRect(ctx, x, y, w, h, fill, stroke) {
     ctx.save();
     ctx.beginPath();

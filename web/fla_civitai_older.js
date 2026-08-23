@@ -17,7 +17,10 @@ import { addCivitaiStyles, el, json, post, prettySize, toast } from "./fla_civit
  *  onChanged — 파일을 지웠을 때(로라 목록을 다시 읽어야 한다)
  *  onCount   — 찾은 개수가 바뀔 때(탭 이름에 숫자를 붙이려고)
  */
-export function buildOlderView({ detail = null, onChanged = null, onCount = null } = {}) {
+export function buildOlderView({ detail = null, onChanged = null, onCount = null,
+                                kind = "loras" } = {}) {
+    // 지금 보고 있는 종류. 부르는 쪽이 바꿔줄 수 있다.
+    let modelKind = kind;
     addCivitaiStyles();
 
     // ---------------------------------------------- 왼쪽: 조작판
@@ -113,7 +116,7 @@ export function buildOlderView({ detail = null, onChanged = null, onCount = null
         keep.onclick = async () => {
             keep.disabled = true;
             const { data } = await post("/fla/civitai/older/keep",
-                { key: item.key, keep: !item.ignored });
+                { key: item.key, keep: !item.ignored, kind: modelKind });
             keep.disabled = false;
             if (!data?.ok) return;
             item.ignored = !item.ignored;
@@ -146,7 +149,8 @@ export function buildOlderView({ detail = null, onChanged = null, onCount = null
         if (button) button.disabled = true;
         let data;
         try {
-            ({ data } = await post("/fla/lora-delete", { name: item.name }));
+            // 종류를 아는 공용 지우기로 부른다(로라·체크포인트 모두 같은 길)
+            ({ data } = await post("/fla/model-delete", { name: item.name, kind: modelKind }));
         } catch (e) {
             data = null;
         }
@@ -221,7 +225,7 @@ export function buildOlderView({ detail = null, onChanged = null, onCount = null
         check.disabled = true;
         let data;
         try {
-            ({ data } = await json("/fla/civitai/older"));
+            ({ data } = await json(`/fla/civitai/older?kind=${encodeURIComponent(modelKind)}`));
         } catch (e) {
             data = null;
         }
@@ -242,6 +246,13 @@ export function buildOlderView({ detail = null, onChanged = null, onCount = null
     render();
 
     return {
+        /** 부르는 쪽이 종류를 바꿨을 때. 다음에 읽을 때 그 종류 것을 본다. */
+        setKind(next) {
+            if (next === modelKind) return;
+            modelKind = next;
+            loaded = false;
+            list.replaceChildren();
+        },
         controls,
         list,
         actions,

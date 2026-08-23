@@ -16,15 +16,28 @@
 import { t } from "./fla_i18n.js";
 import { POLL, addCivitaiStyles, el, json, post, toast } from "./fla_civitai_util.js";
 import { buildBrowseView } from "./fla_civitai_browse.js";
+import { buildDownloadsView } from "./fla_civitai_downloads.js";
 import { buildUpdatesView } from "./fla_civitai_updates.js";
+import { buildWorkflowUpdatesView } from "./fla_workflow_updates.js";
 
 // Civitai 계정 설정 페이지. 안내에서 바로 열어준다.
 const ACCOUNT_URL = "https://civitai.com/user/account";
 
+// "내 모델" 탭에서 오갈 수 있는 종류. 서버의 models.KINDS 와 짝이 맞는다.
+const MY_KINDS = [
+    ["loras", "civitaiMyLoras"],
+    ["checkpoints", "civitaiMyCheckpoints"],
+    ["workflows", "civitaiMyWorkflows"],
+];
+
+// 해시로 정보를 채울 수 있는 종류. 워크플로우는 zip 에서 풀려 나온 .json 이라
+// 원본 해시와 맞지 않아 이 길을 못 탄다.
+const HASHABLE = ["loras", "checkpoints"];
+
 /** 키 유무와 남은 개수, 진행 중인 검사 상태를 한 번에 가져온다. */
-export async function civitaiStatus() {
+export async function civitaiStatus(kind = "loras") {
     try {
-        const { data } = await json("/fla/civitai/status");
+        const { data } = await json(`/fla/civitai/status?kind=${encodeURIComponent(kind)}`);
         return data?.ok ? data : null;
     } catch (e) {
         return null;
@@ -33,10 +46,10 @@ export async function civitaiStatus() {
 
 /** 로라 하나를 Civitai 에서 새로 받아온다. 상세 창 버튼이 쓴다.
  *  성공하면 서버가 준 결과를, 실패하면 null 을 준다(알림은 여기서 띄운다). */
-export async function fetchLoraInfo(name) {
+export async function fetchLoraInfo(name, kind = "loras") {
     let result;
     try {
-        result = await post("/fla/civitai/fetch", { name });
+        result = await post("/fla/civitai/fetch", { name, kind });
     } catch (e) {
         toast(t("civitaiFetchFail") + String(e), true);
         return null;
@@ -125,8 +138,10 @@ const STEPS = [
 
 /** Civitai 창을 연다. onFinished 는 로라 목록이 바뀌었을 때 부른다
  *  (정보를 채웠거나 새 모델을 받았을 때). */
-export function openCivitaiPanel(onFinished = null) {
+export function openCivitaiPanel(onFinished = null, startKind = "loras", browseType = null) {
     addCivitaiStyles();
+    // 지금 보고 있는 내 모델 종류. 위쪽 단추로 바꾼다.
+    let kind = MY_KINDS.some(([value]) => value === startKind) ? startKind : "loras";
 
     const bg = el("div", "fla-cv-bg");
     bg.innerHTML = `<div class="fla-cv" role="dialog" aria-modal="true"><div class="fla-cv-head"><div class="logo">C</div><h2></h2><div class="fla-cv-tabs"></div><div class="spacer"></div><button class="close" title="${t("cancel")}">×</button></div><div class="fla-cv-main"></div></div>`;
@@ -146,12 +161,27 @@ export function openCivitaiPanel(onFinished = null) {
     let updatesAwake = false;
 
     const browse = buildBrowseView(() => { changed = true; });
-    const updates = buildUpdatesView(() => { changed = true; });
+    // 받기 관리 탭. 키가 없어 막히면 "내 모델" 탭의 키 등록으로 보낸다.
+    const downloads = buildDownloadsView({
+        onFinished: () => { changed = true; },
+        onNeedKey: () => {
+            showGuide = true;
+            tabButtons[0].onclick();
+            paintView(true);
+            keyInput.focus();
+        },
+    });
+    // 종류마다 업데이트 칸이 다르다. 둘 다 만들어 두고 갈아 끼운다.
+    const modelUpdates = buildUpdatesView(() => { changed = true; }, kind === "workflows" ? "loras" : kind);
+    const workflowUpdates = buildWorkflowUpdatesView(() => { changed = true; });
+    let updates = kind === "workflows" ? workflowUpdates : modelUpdates;
 
     const close = () => {
         clearTimeout(timer);
         browse.dispose();
-        updates.dispose();
+        downloads.dispose();
+        modelUpdates.dispose();
+        workflowUpdates.dispose();
         document.removeEventListener("keydown", key, true);
         bg.remove();
         // 받기가 백그라운드로 계속 돌 수 있으므로, 바뀐 게 있으면 목록을 새로 그린다
@@ -174,6 +204,8 @@ export function openCivitaiPanel(onFinished = null) {
     const split = el("div", "fla-cv-split");
     const rail = el("div", "fla-cv-rail");
     split.append(rail, updates.pane);
+    // 종류를 바꾸면 이 자리에 다른 칸을 끼운다
+    const swapPane = (next) => split.replaceChild(next.pane, split.lastChild);
     libraryPage.append(libraryBody, split);
 
     /** 왼쪽 칸에 넣는 상자 하나. */
@@ -185,6 +217,22 @@ export function openCivitaiPanel(onFinished = null) {
         root.append(head, body);
         return { root, head, body };
     }
+
+    // 종류 고르는 단추줄. 왼쪽 칸 맨 위에 둔다.
+    const kindBar = el("div", "fla-cv-kinds");
+    const kindButtons = MY_KINDS.map(([value, label]) => {
+        const button = el("button", value === kind ? "on" : null);
+        button.append(el("span", null, t(label)), el("b", null, ""));
+        button.onclick = () => {
+            if (kind === value) return;
+            kind = value;
+            kindButtons.forEach((b, i) => b.classList.toggle("on", MY_KINDS[i][0] === kind));
+            applyKind();
+            refresh();
+        };
+        kindBar.appendChild(button);
+        return button;
+    });
 
     // 안내(키 없을 때)
     const guide = el("div", "fla-cv-sec");
@@ -264,6 +312,51 @@ export function openCivitaiPanel(onFinished = null) {
     changeKey.onclick = () => { showGuide = true; paintView(true); };
     clearKey.onclick = () => saveKey("");
 
+    // ---------------------------------------------- 브라우저 세션(선택)
+    //
+    // 글쓴이가 '로그인한 사람만 다운로드' 를 켜 둔 글은 API 키로 못 받는다.
+    // 브라우저가 쓰는 세션 쿠키를 들고 가면 받아진다. 다만 이건 계정에
+    // 로그인한 것과 같은 힘이라 기본은 접어 두고 경고를 함께 보여준다.
+    const sessionBox = el("details", "fla-cv-session");
+    const sessionHead = el("summary", null, t("sessionTitle"));
+    const sessionState = el("span", "state", "");
+    sessionHead.appendChild(sessionState);
+    const sessionWhy = el("div", "why", t("sessionWhy"));
+    const sessionWarn = el("div", "fla-cv-warn", t("sessionWarn"));
+    const sessionRow = el("div", "fla-cv-key");
+    const sessionInput = el("input");
+    sessionInput.type = "password";
+    sessionInput.autocomplete = "off";
+    sessionInput.placeholder = t("sessionPaste");
+    const sessionSave = el("button", "fla-cv-btn go", t("save"));
+    sessionRow.append(sessionInput, sessionSave);
+    const sessionClear = el("button", "fla-cv-link", t("sessionClear"));
+    sessionClear.style.marginTop = "7px";
+    const sessionHow = el("div", "fla-cv-tally", t("sessionHow"));
+    sessionBox.append(sessionHead, sessionWhy, sessionWarn, sessionRow, sessionClear, sessionHow);
+    // 다 만든 뒤에 붙인다(만들기 전에 붙이면 아직 없는 것을 만지게 된다)
+    keyBox.body.appendChild(sessionBox);
+
+    async function saveSession(value) {
+        sessionSave.disabled = true;
+        try {
+            const { data } = await post("/fla/civitai/session", { session: value });
+            if (!data?.ok) { toast(data?.error ?? t("civitaiFetchFail"), true); return; }
+            sessionInput.value = "";
+            toast(data.has_session ? t("sessionSaved") : t("sessionCleared"));
+            refresh();
+        } finally {
+            sessionSave.disabled = false;
+        }
+    }
+    sessionSave.onclick = () => {
+        const value = sessionInput.value.trim();
+        if (!value) { toast(t("sessionPaste"), true); return; }
+        saveSession(value);
+    };
+    sessionInput.addEventListener("keydown", (event) => { if (event.key === "Enter") sessionSave.onclick(); });
+    sessionClear.onclick = () => saveSession("");
+
     // 가져오기 상자
     const scanBox = railBox(t("civitaiScan"));
     const count = el("div", "fla-cv-count");
@@ -291,17 +384,40 @@ export function openCivitaiPanel(onFinished = null) {
     scanBox.body.append(count, buttons, replaceRow, bar, now, tally, errors);
 
     narrow.appendChild(guide);
-    rail.append(keyBox.root, scanBox.root, updates.controls, updates.cleanup);
+    rail.append(kindBar, keyBox.root, scanBox.root, modelUpdates.controls, modelUpdates.cleanup,
+                workflowUpdates.controls);
+
+    /** 지금 고른 종류에 맞게 왼쪽 상자와 오른쪽 칸을 맞춘다. */
+    function applyKind() {
+        const hashable = HASHABLE.includes(kind);
+        // 해시로 정보를 채울 수 없는 종류는 "한꺼번에 가져오기" 상자를 감춘다
+        scanBox.root.style.display = hashable ? "" : "none";
+        // 옛 버전 정리도 모델에만 뜻이 있다
+        modelUpdates.controls.style.display = hashable ? "" : "none";
+        modelUpdates.cleanup.style.display = hashable ? "" : "none";
+        workflowUpdates.controls.style.display = hashable ? "none" : "";
+
+        const next = hashable ? modelUpdates : workflowUpdates;
+        if (next !== updates) {
+            updates = next;
+            swapPane(next);
+        }
+        if (hashable) modelUpdates.setKind(kind);
+        if (updatesAwake) updates.activate();
+    }
+
+    applyKind();
     // 키가 있는지 알기 전까지는 둘 다 감춰 둔다(잘못된 화면이 잠깐 스치지 않게)
     guide.style.display = "none";
     split.style.display = "none";
 
     // ---------------------------------------------- 탭
-    main.append(libraryPage, browse.root);
+    main.append(libraryPage, browse.root, downloads.root);
 
     const pages = [
-        [t("civitaiTabLibrary"), libraryPage, () => { if (updatesAwake) updates.activate(); }],
+        [t("civitaiTabMine"), libraryPage, () => { if (updatesAwake) updates.activate(); }],
         [t("civitaiTabBrowse"), browse.root, () => browse.activate()],
+        [t("civitaiTabDownloads"), downloads.root, () => downloads.activate()],
     ];
     const tabButtons = pages.map(([label, page, onShow]) => {
         const button = el("button", null, label);
@@ -333,20 +449,36 @@ export function openCivitaiPanel(onFinished = null) {
     function paint(status) {
         if (!status) return;
         paintView(status.has_key === true);
+        downloads.setHasKey(status.has_key === true);
         keyStateText.textContent = status.has_key ? t("civitaiKeyOk") : t("civitaiKeyNone");
         clearKey.style.display = status.has_key ? "" : "none";
+        sessionState.textContent = status.has_session ? t("sessionOn") : "";
+        sessionState.classList.toggle("on", status.has_session === true);
+        sessionClear.style.display = status.has_session ? "" : "none";
+
+        // 종류 단추에 아직 정보 없는 개수를 찍는다
+        const byKind = status.pending_by_kind ?? {};
+        kindButtons.forEach((button, i) => {
+            const count = byKind[MY_KINDS[i][0]] ?? 0;
+            button.querySelector("b").textContent = count ? String(count) : "";
+        });
 
         const p = status.progress ?? {};
-        const running = p.running === true;
+        // 진행률은 지금 보고 있는 종류의 것일 때만 보여준다
+        const running = p.running === true && (p.kind ?? "loras") === kind;
         count.replaceChildren(document.createTextNode(`${t("civitaiPending")}: `), el("b", null, String(status.pending ?? 0)));
 
         scanMissing.disabled = running || !(status.pending > 0);
         scanAll.disabled = running;
         replace.disabled = running;
+        if (HASHABLE.includes(kind)) {
+            scanBox.head.querySelector("span").textContent =
+                `${t("civitaiScan")} — ${t(MY_KINDS.find(([v]) => v === kind)[1])}`;
+        }
         stop.style.display = running ? "" : "none";
         stop.disabled = p.cancelled === true;
 
-        const total = p.total ?? 0;
+        const total = (p.kind ?? "loras") === kind ? (p.total ?? 0) : 0;
         if (total > 0) {
             bar.style.display = "";
             fill.style.width = `${Math.round(((p.done ?? 0) / total) * 100)}%`;
@@ -371,7 +503,7 @@ export function openCivitaiPanel(onFinished = null) {
     }
 
     async function refresh() {
-        const status = await civitaiStatus();
+        const status = await civitaiStatus(kind);
         paint(status);
         clearTimeout(timer);
         // 도는 동안에만 자주 물어본다. 끝나면 조용히 둔다.
@@ -380,7 +512,8 @@ export function openCivitaiPanel(onFinished = null) {
     }
 
     async function start(overwrite) {
-        const result = await post("/fla/civitai/scan", { overwrite, replace_preview: replace.checked });
+        const result = await post("/fla/civitai/scan",
+            { overwrite, replace_preview: replace.checked, kind });
         if (!result.data?.ok) {
             toast(result.data?.error ?? t("civitaiFetchFail"), true);
             return;
@@ -400,6 +533,13 @@ export function openCivitaiPanel(onFinished = null) {
         refresh();
     };
 
-    tabButtons[0].onclick();
+    // 워크플로우 창에서 열면 바로 "모델 찾기" 로 가서 그 카테고리를 보여준다.
+    // 워크플로우는 해시로 찾을 수 있는 것이 아니라 "내 모델" 탭에 들어가지 않는다.
+    if (browseType !== null) {
+        tabButtons[1].onclick();
+        browse.setType(browseType);
+    } else {
+        tabButtons[0].onclick();
+    }
     refresh();
 }

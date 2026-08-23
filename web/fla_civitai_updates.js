@@ -30,7 +30,9 @@ function prettyWhen(stamp) {
 }
 
 /** onChanged 는 로라 목록이 바뀌었을 때(새 버전을 받았을 때) 부른다. */
-export function buildUpdatesView(onChanged = null) {
+export function buildUpdatesView(onChanged = null, kind = "loras") {
+    // 지금 보고 있는 종류. 창 위쪽 단추가 바꿔준다.
+    let modelKind = kind;
     addCivitaiStyles();
 
     // ---------------------------------------------- 왼쪽: 조작판
@@ -115,6 +117,7 @@ export function buildUpdatesView(onChanged = null) {
     let olderCount = 0;
     const older = buildOlderView({
         detail,
+        kind: modelKind,
         onChanged: () => onChanged?.(),
         onCount: (n) => { olderCount = n; paintSegments(); },
     });
@@ -123,7 +126,7 @@ export function buildUpdatesView(onChanged = null) {
 
     const downloads = createDownloadBar(async () => {
         // 받은 것은 다음 확인 때 목록에서 빠진다. 지금은 표시만 바꾼다.
-        await loadFolders(true);
+        await loadFolders(modelKind, true);
         for (const item of items) {
             if (queued.has(item.key) && item.latest?.id) markInstalled(item.latest.id);
         }
@@ -262,7 +265,7 @@ export function buildUpdatesView(onChanged = null) {
         ignore.onclick = async () => {
             ignore.disabled = true;
             const { data } = await post("/fla/civitai/updates/ignore",
-                { key: item.key, ignore: !item.ignored });
+                { key: item.key, ignore: !item.ignored, kind: modelKind });
             ignore.disabled = false;
             if (!data?.ok) return;
             item.ignored = !item.ignored;
@@ -318,7 +321,7 @@ export function buildUpdatesView(onChanged = null) {
     toggleIgnored.onclick = () => { showIgnored = !showIgnored; render(); };
 
     clear.onclick = async () => {
-        const { data } = await post("/fla/civitai/updates/clear");
+        const { data } = await post("/fla/civitai/updates/clear", { kind: modelKind });
         if (!data?.ok) return;
         items = [];
         checkedAt = 0;
@@ -400,7 +403,7 @@ export function buildUpdatesView(onChanged = null) {
     async function reload() {
         let data;
         try {
-            ({ data } = await json("/fla/civitai/updates"));
+            ({ data } = await json(`/fla/civitai/updates?kind=${encodeURIComponent(modelKind)}`));
         } catch (e) {
             return null;
         }
@@ -417,7 +420,7 @@ export function buildUpdatesView(onChanged = null) {
         clearTimeout(timer);
         let data;
         try {
-            ({ data } = await json("/fla/civitai/updates/status"));
+            ({ data } = await json(`/fla/civitai/updates/status?kind=${encodeURIComponent(modelKind)}`));
         } catch (e) {
             return;
         }
@@ -434,7 +437,8 @@ export function buildUpdatesView(onChanged = null) {
         check.disabled = true;
         let data;
         try {
-            ({ data } = await post("/fla/civitai/updates/scan", { deep: deep.checked }));
+            ({ data } = await post("/fla/civitai/updates/scan",
+                { deep: deep.checked, kind: modelKind }));
         } catch (e) {
             data = null;
         }
@@ -458,6 +462,18 @@ export function buildUpdatesView(onChanged = null) {
 
     return {
         controls,
+        /** 창 위쪽에서 종류를 바꿨을 때. 목록을 그 종류 것으로 갈아끼운다. */
+        setKind(next) {
+            if (next === modelKind) return;
+            modelKind = next;
+            older.setKind(next);
+            items = [];
+            queued.clear();
+            pickItem(null);
+            render();
+            loaded = false;
+            this.activate();
+        },
         /** 왼쪽 칸에 업데이트 상자 아래로 붙일 정리 상자. */
         cleanup: older.controls,
         pane,

@@ -5,7 +5,8 @@
  */
 
 import { t } from "./fla_i18n.js";
-import { POLL, addCivitaiStyles, el, json, post, prettySize } from "./fla_civitai_util.js";
+import { POLL, addCivitaiStyles, el, json, post, prettySize, refreshNodeChoices }
+    from "./fla_civitai_util.js";
 
 /** 진행 줄 하나를 만든다.
  *  onFinished 는 대기열이 다 비었고 하나라도 받아졌을 때 한 번 부른다. */
@@ -71,6 +72,8 @@ export function createDownloadBar(onFinished = null) {
         } else if (saw) {
             saw = false;
             await onFinished?.(state);
+            // 캔버스 노드의 고르는 칸에도 새 파일이 뜨게 한다
+            refreshNodeChoices();
         }
     }
 

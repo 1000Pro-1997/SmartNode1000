@@ -8,7 +8,7 @@ import { attachWildcardAutocomplete } from "./fla_wildcard_autocomplete.js";
 import {
     ROW_HEIGHT, LAYOUT_PAD, findWidget, drawRoundedRect,
     drawToggle, drawNumber, fitText, inBounds, isNodeOff,
-    buildLoraBox,
+    buildLoraBox, notify, pickFromList, insertAfter, openPresetFolder, relinkLoras,
 } from "./fla_lora_ui.js";
 
 const NODE_NAME = "SN1000Checklist";
@@ -26,6 +26,7 @@ const COLORS = {
     panel: "#242a30",     // 설정 패널 바탕
     panelEdge: "#3f5a70", // 설정 패널 테두리
     danger: "#5e2f2f",    // 삭제
+    options: "#3a4a6a",   // 옵션 — 파랑
 };
 
 /** 항목 제목이 비었을 때 프롬프트 앞부분으로 대신 보여준다. */
@@ -203,7 +204,8 @@ function makeItemRow(node, item, idx) {
     };
 }
 
-/** 좌우로 나뉜 버튼 한 줄을 만든다. [라벨, 색, 동작] 을 받는다. */
+/** 좌우로 나뉜 버튼 한 줄을 만든다. [라벨, 색, 동작, 테두리색, 몫] 을 받는다.
+ *  몫은 서로 견주는 너비다(안 주면 1). 2 를 주면 1 인 버튼의 두 배로 넓다. */
 function makeButtonRow(node, name, buttons) {
     return {
         type: "custom",
@@ -221,20 +223,23 @@ function makeButtonRow(node, name, buttons) {
             const gap = 6;
             const width = node.size?.[0] ?? widgetWidth;
             const midY = posY + height * 0.5;
-            const each = (width - margin * 2 - gap * (buttons.length - 1)) / buttons.length;
+            const space = width - margin * 2 - gap * (buttons.length - 1);
+            const share = buttons.reduce((sum, btn) => sum + (btn[4] ?? 1), 0);
 
             ctx.save();
             ctx.textBaseline = "middle";
             ctx.textAlign = "center";
             this.bounds = [];
 
+            let x = margin;
             buttons.forEach((btn, i) => {
-                const x = margin + (each + gap) * i;
+                const each = space * (btn[4] ?? 1) / share;
                 drawRoundedRect(ctx, x, posY, each, height,
                     ...hitColors(this, i, btn[1], btn[3] ?? null));
                 this.bounds.push([x, each]);
                 ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
                 ctx.fillText(fitText(ctx, btn[0], each - 8), x + each / 2, midY);
+                x += each + gap;
             });
 
             ctx.restore();
@@ -665,6 +670,37 @@ function makeHeaderRow(node) {
     };
 }
 
+// ─────────── 옵션 메뉴 ───────────
+
+/** 이 노드 뒤에 같은 노드를 하나 더 붙인다.
+ *  체크리스트를 주제별로 나눠 쓸 때 선을 일일이 잇지 않아도 되게 한다. */
+function actChain(node) {
+    if (insertAfter(node, NODE_NAME)) notify(t("chained"));
+    else notify(t("chainFailed"), true);
+}
+
+/** 끊긴 로라 경로를 지금 내 폴더에 있는 파일로 다시 맞춘다.
+ *  항목마다 로라를 따로 들고 있으므로 전부 모아 한 번에 물어본다. */
+async function actRelink(node) {
+    const all = [];
+    for (const item of node.flaItems ?? []) all.push(...(item.loras ?? []));
+    if (!await relinkLoras(all)) return;
+    syncHidden(node);
+    rebuildAfterPointer(node);
+}
+
+/** 옵션 버튼에 딸린 메뉴. 누른 자리에서 펼친다. */
+function openOptions(node, event) {
+    const OPTS = [
+        ["➕ " + t("chainNode"), () => actChain(node)],
+        ["📂 " + t("openFolder"), () => openPresetFolder()],
+        ["🔗 " + t("relinkLoras"), () => actRelink(node)],
+    ];
+    pickFromList(OPTS.map((o) => o[0]), event).then((choice) => {
+        OPTS.find((o) => o[0] === choice)?.[1]();
+    });
+}
+
 // ─────────── 전체 다시 그리기 ───────────
 
 /** 화면 전체를 다시 만든다.
@@ -788,14 +824,18 @@ function rebuild(node) {
         node.widgets.splice(node.widgets.indexOf(panel[0]), 0, box);
     });
 
-    // 맨 아래: 항목 추가
+    // 맨 아래: 항목 추가 + 옵션.
+    // 옵션은 자주 쓰지 않으므로 좁게 두고 추가 버튼에 자리를 더 준다.
     const add = makeButtonRow(node, "fla_add", [
         ["＋ " + t("addItem"), off ? "#2a2a2a" : COLORS.action, () => {
             node.flaItems.push(newItem());
             // 새 항목은 바로 편집할 수 있도록 펼쳐준다
             node.flaOpen = node.flaItems.length - 1;
             rebuildAfterPointer(node);
-        }],
+        }, null, 2],
+        ["⚙ " + t("options"), COLORS.options, (event) => {
+            openOptions(node, event);
+        }, null, 1],
     ]);
     node.widgets.push(add);
 

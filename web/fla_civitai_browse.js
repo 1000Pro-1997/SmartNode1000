@@ -10,6 +10,22 @@ import { ADULT_LEVEL, addCivitaiStyles, el, json, toast } from "./fla_civitai_ut
 import { createDownloadBar } from "./fla_civitai_download.js";
 import { clearCache, createModelDetail, loadFolders, markInstalled } from "./fla_civitai_detail.js";
 
+// 고를 수 있는 종류. 값은 Civitai API 의 types 그대로다(""는 전체).
+// 앞의 넷은 우리가 받아둘 자리를 아는 것이고, 나머지는 구경만 된다.
+const CATEGORIES = [
+    ["", "civitaiTypeAll"],
+    ["Checkpoint", "civitaiTypeCheckpoint"],
+    ["LORA", "civitaiTypeLora"],
+    ["Workflows", "civitaiTypeWorkflows"],
+    ["Wildcards", "civitaiTypeWildcards"],
+    ["Controlnet", "civitaiTypeControlnet"],
+    ["VAE", "civitaiTypeVae"],
+    ["Upscaler", "civitaiTypeUpscaler"],
+    ["TextualInversion", "civitaiTypeEmbedding"],
+    ["Poses", "civitaiTypePoses"],
+    ["Other", "civitaiTypeOther"],
+];
+
 const SORTS = ["Most Downloaded", "Highest Rated", "Newest", "Most Liked"];
 const PERIODS = ["AllTime", "Year", "Month", "Week", "Day"];
 // 자주 쓰는 것만. 이 목록에 없는 기반 모델도 검색 결과에는 그대로 나온다.
@@ -20,6 +36,11 @@ const BASE_MODELS = ["SDXL 1.0", "Pony", "Illustrious", "NoobAI", "SD 1.5", "Flu
  *  onInstalled 는 하나라도 받아졌을 때 부른다(로라 목록을 다시 읽어야 한다). */
 export function buildBrowseView(onInstalled = null) {
     addCivitaiStyles();
+    // 고른 종류는 창을 닫아도 남는다. 매번 다시 고르게 하면 성가시다.
+    let savedType = "";
+    try {
+        savedType = localStorage.getItem("fla.civitai.type") ?? "";
+    } catch (e) { /* 저장소를 못 쓰면 그냥 전체로 시작한다 */ }
 
     const root = el("div", "fla-cv-page");
 
@@ -27,7 +48,18 @@ export function buildBrowseView(onInstalled = null) {
     const searchBar = el("div", "fla-cv-search");
     const query = el("input");
     query.type = "search";
-    query.placeholder = t("civitaiSearchPlaceholder");
+
+    const category = el("select");
+    category.className = "fla-cv-cat";
+    for (const [value, label] of CATEGORIES) category.appendChild(new Option(t(label), value));
+    if (CATEGORIES.some(([value]) => value === savedType)) category.value = savedType;
+
+    /** 안내문은 지금 고른 종류를 따라간다("로라 검색" 이 굳어 있으면 거짓말이 된다). */
+    const paintPlaceholder = () => {
+        const label = CATEGORIES.find(([value]) => value === category.value)?.[1];
+        query.placeholder = t("civitaiSearchIn").replace("{what}", label ? t(label) : "");
+    };
+    paintPlaceholder();
 
     const sort = el("select");
     for (const value of SORTS) sort.appendChild(new Option(t(`civitaiSort_${value.replace(/\s/g, "")}`), value));
@@ -42,7 +74,7 @@ export function buildBrowseView(onInstalled = null) {
     nsfw.appendChild(new Option(t("civitaiNsfwOnly"), "true"));
 
     const go = el("button", "fla-cv-btn go", t("civitaiSearch"));
-    searchBar.append(query, sort, period, base, nsfw, go);
+    searchBar.append(category, query, sort, period, base, nsfw, go);
 
     // ---------------------------------------------- 상태
     let items = [];
@@ -69,7 +101,10 @@ export function buildBrowseView(onInstalled = null) {
     // 받는 일은 서버가 한다. 여기서는 대기열에 넣고 진행률만 본다.
     const downloads = createDownloadBar(async () => {
         onInstalled?.();
-        await loadFolders(true);
+        // 방금 받은 것들의 종류만 폴더를 새로 읽는다
+        for (const kind of new Set(items.map((m) => m.kind).filter(Boolean))) {
+            await loadFolders(kind, true);
+        }
         // 방금 받은 버전에 "있음" 을 찍는다(다시 검색하지 않아도 보이게)
         for (const model of items) {
             for (const version of model.versions ?? []) {
@@ -84,13 +119,22 @@ export function buildBrowseView(onInstalled = null) {
 
     root.append(searchBar, results, downloads.root);
 
+    category.onchange = () => {
+        paintPlaceholder();
+        try {
+            localStorage.setItem("fla.civitai.type", category.value);
+        } catch (e) { /* 못 남겨도 이번 창에서는 그대로 쓴다 */ }
+        search();
+    };
+
     // ---------------------------------------------- 검색
     async function search(more = false) {
         if (loading) return;
         loading = true;
         go.disabled = true;
         try {
-            const params = new URLSearchParams({ types: "LORA" });
+            const params = new URLSearchParams();
+            if (category.value) params.set("types", category.value);
             if (query.value.trim()) params.set("query", query.value.trim());
             params.set("sort", sort.value);
             params.set("period", period.value);
@@ -131,9 +175,22 @@ export function buildBrowseView(onInstalled = null) {
         }
     }
 
+    /** 영상 미리보기인가. type 이 빠져 오는 일이 있어 주소 끝도 본다. */
+    function looksVideo(shot) {
+        return shot?.type === "video" || /\.(mp4|webm)(\?|$)/i.test(shot?.url ?? "");
+    }
+
+    /** 카드에 쓸 미리보기 하나.
+     *
+     *  최신 버전부터 본다. 한 버전 안에서는 정지 그림을 먼저 고른다 —
+     *  영상은 여러 장 깔리면 목록이 무거워진다. 그림이 하나도 없으면
+     *  그때 영상을 쓴다(영상 모델은 미리보기가 전부 .mp4 인 일이 흔하다).
+     */
     function firstImage(model) {
         for (const version of model.versions ?? []) {
-            if (version.images?.length) return version.images[0];
+            const shots = version.images ?? [];
+            if (!shots.length) continue;
+            return shots.find((shot) => !looksVideo(shot)) ?? shots[0];
         }
         return null;
     }
@@ -146,9 +203,19 @@ export function buildBrowseView(onInstalled = null) {
         const shot = el("div", "fla-cv-shot");
         const image = firstImage(model);
         if (image) {
-            const img = el("img");
+            // .mp4 를 <img> 에 넣으면 아무것도 안 나온다. 종류에 맞는 칸을 쓴다.
+            // type 이 빠져 오는 일도 있어 주소 끝도 함께 본다(상세 칸과 같은 방식).
+            const isVideo = image.type === "video" || /\.(mp4|webm)(\?|$)/i.test(image.url ?? "");
+            const img = el(isVideo ? "video" : "img");
             img.src = image.url;
-            img.loading = "lazy";
+            if (isVideo) {
+                img.muted = true;
+                img.loop = true;
+                img.autoplay = true;
+                img.playsInline = true;
+            } else {
+                img.loading = "lazy";
+            }
             img.onerror = () => img.remove();
             // 카드 그림은 모델 등급으로 가린다. "보기" 를 누른 것만 풀어준다.
             const hide = (model.nsfw || (image.nsfw_level ?? 0) >= ADULT_LEVEL) && !revealed.has(model.id);
@@ -167,7 +234,9 @@ export function buildBrowseView(onInstalled = null) {
             }
             shot.appendChild(img);
         } else {
-            shot.append("LoRA");
+            // 미리보기가 없는 글도 있다. 종류라도 적어 둔다("LoRA" 로 박아두면
+            // 체크포인트·워크플로우 카드에서 거짓말이 된다).
+            shot.append(model.type || "?");
         }
         shot.appendChild(el("div", "fla-cv-shade"));
         shot.appendChild(el("div", "fla-cv-cardtitle", model.name));
@@ -203,9 +272,20 @@ export function buildBrowseView(onInstalled = null) {
     let started = false;
     return {
         root,
+        /** 부르는 쪽이 카테고리를 정해줄 때(워크플로우 창에서 열면 워크플로우로). */
+        setType(value) {
+            if (!CATEGORIES.some(([option]) => option === value)) return;
+            if (category.value === value) return;
+            category.value = value;
+            try {
+                localStorage.setItem("fla.civitai.type", value);
+            } catch (e) { /* 못 남겨도 이번 창에서는 그대로 쓴다 */ }
+            started = true;
+            search(false);
+        },
         /** 탭을 처음 열 때 한 번만 검색한다. */
         async activate() {
-            await loadFolders();
+            await loadFolders("loras");
             downloads.watch();
             if (started) return;
             started = true;
