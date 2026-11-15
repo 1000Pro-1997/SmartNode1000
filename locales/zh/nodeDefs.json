@@ -141,5 +141,15 @@
         "name": "信息"
       }
     }
+  },
+  "SN1000GroupToggle": {
+    "display_name": "SN1000 分组开关",
+    "description": "用一个清单整体旁路或静音画布上的分组。按名称或颜色选择分组；放入同一开关组的项一次只能开启一个。",
+    "inputs": {
+      "items_data": {
+        "name": "项目数据",
+        "tooltip": "开关项目（JSON）。由 UI 管理。"
+      }
+    }
   }
 }

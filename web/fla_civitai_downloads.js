@@ -88,11 +88,21 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
     let saw = false;
     let hasKey = true;
 
-    /** 어디서 받는지 알려주는 작은 딱지. */
+    /** 어디서 받는지 알려주는 작은 딱지. 다운로드 폴더에서 가져온 것은 따로 표시한다. */
     function source(where) {
-        const chip = el("span", "fla-cv-dlsrc", where === "huggingface" ? "HF" : "Civitai");
-        chip.classList.add(where === "huggingface" ? "hf" : "cv");
+        const [text, tone] = where === "huggingface" ? ["HF", "hf"]
+            : where === "import" ? [t("dlSrcImport"), "pc"]
+            : ["Civitai", "cv"];
+        const chip = el("span", "fla-cv-dlsrc", text);
+        chip.classList.add(tone);
         return chip;
+    }
+
+    /** 들어간 자리. "LoRA / Flux" 처럼 종류와 하위 폴더를 함께 적는다. */
+    function landed(item) {
+        const kind = item.kind ? kindLabel(item.kind) : "";
+        const folder = item.folder && item.folder !== "/" ? item.folder : "";
+        return [kind, folder].filter(Boolean).join(" / ") || "/";
     }
 
     function section(label, count) {
@@ -115,7 +125,7 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
             if (current) {
                 nowWhere.appendChild(source(current.source));
                 nowWhere.appendChild(document.createTextNode(
-                    `${current.file_name || ""}  →  ${current.folder || "/"}`));
+                    `${current.file_name || ""}  →  ${landed(current)}`));
             }
             if (state.total > 0) {
                 const percent = Math.round((state.received / state.total) * 100);
@@ -137,7 +147,7 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
                 const line = el("div", "fla-cv-dlrow");
                 line.appendChild(source(job.source));
                 line.appendChild(el("span", "name", job.title || job.path || String(job.version_id ?? "")));
-                line.appendChild(el("span", "to", job.folder || "/"));
+                line.appendChild(el("span", "to", landed(job)));
                 body.appendChild(line);
             }
         }
@@ -149,7 +159,21 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
                 const line = el("div", `fla-cv-dlrow${item.error ? " bad" : ""}`);
                 line.appendChild(source(item.source));
                 line.appendChild(el("span", "name", item.title || item.file_name || ""));
-                line.appendChild(el("span", "to", item.error || item.folder || "/"));
+                line.appendChild(el("span", "to", item.error || landed(item)));
+                // 누르면 옮겨 간 폴더가 탐색기로 열린다(파일이 골라진 채로)
+                if (!item.error && item.path && item.id) {
+                    line.classList.add("open");
+                    line.title = `${t("dlReveal")}\n${item.path}`;
+                    line.appendChild(el("i", "pi pi-folder-open"));
+                    line.onclick = async () => {
+                        try {
+                            const { data } = await post("/fla/civitai/download-reveal", { id: item.id });
+                            if (!data?.ok) throw new Error(data?.error ?? "");
+                        } catch (e) {
+                            line.title = t("dlRevealFail") + (e.message || "");
+                        }
+                    };
+                }
                 // 브라우저로 가야 하는 것은 갈 곳을 함께 준다
                 if (item.login_needed && item.url) {
                     const link = el("a", "fla-cv-dlopen", t("dlOpenSite"));
@@ -179,18 +203,22 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
         keyNote.style.display = keyless ? "" : "none";
     }
 
+    /** 종류 이름표. 받은 줄과 가져올 카드가 함께 쓴다. */
+    async function loadKinds() {
+        if (kinds.length) return;
+        try {
+            const res = await fetch("/fla/model-kinds");
+            const got = await res.json();
+            kinds = got.kinds ?? [];
+        } catch (e) {
+            kinds = [];
+        }
+    }
+
     /** 다운로드 폴더에서 가져올 만한 것을 찾아 그린다. */
     async function loadImports() {
         rescan.disabled = true;
-        if (!kinds.length) {
-            try {
-                const res = await fetch("/fla/model-kinds");
-                const got = await res.json();
-                kinds = got.kinds ?? [];
-            } catch (e) {
-                kinds = [];
-            }
-        }
+        await loadKinds();
         let data;
         try {
             const res = await fetch("/fla/import/scan");
@@ -226,7 +254,55 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
         return new Date(seconds * 1000).toLocaleDateString();
     }
 
+    /** 워크플로우 JSON 카드. 모델과 달리 종류 고르기가 없다 — 갈 곳이 하나다. */
+    function workflowCard(item) {
+        const card = el("div", "fla-cv-impcard");
+
+        const top = el("div", "head");
+        const name = el("div", "name", item.name);
+        name.title = item.path;
+        top.appendChild(name);
+        card.appendChild(top);
+
+        const marks = el("div", "marks");
+        marks.appendChild(el("span", "kind wf", t("dlImportWorkflow")));
+        if (item.already) marks.appendChild(el("span", "dup", t("dlImportDup")));
+        card.appendChild(marks);
+
+        const facts = el("div", "facts");
+        facts.append(el("span", null, prettySize(item.size)),
+                     el("span", null, when(item.modified)),
+                     el("span", null, t("dlImportWfNodes").replace("{n}", item.nodes)));
+        card.appendChild(facts);
+
+        const going = el("div", "going", "→ " + t("dlImportWfGoing"));
+        card.appendChild(going);
+
+        const row = el("div", "acts");
+        const take = el("button", "fla-cv-dltake", t("dlImportTake"));
+        take.onclick = async () => {
+            take.disabled = true;
+            take.textContent = t("dlImportTaking");
+            try {
+                const { data } = await post("/fla/import/take", { path: item.path });
+                if (!data?.ok) throw new Error(data?.error ?? "");
+                card.classList.add("sent");
+                take.textContent = t("dlImportWfDone");
+                // 어느 이름으로 들어갔는지 보여준다(겹치면 번호가 붙는다)
+                going.textContent = "→ " + (data.workflow?.name ?? t("dlImportWfGoing"));
+            } catch (e) {
+                take.disabled = false;
+                take.textContent = t("dlImportTake");
+                card.appendChild(el("div", "err", t("dlImportFail") + (e.message || "")));
+            }
+        };
+        row.append(take);
+        card.appendChild(row);
+        return card;
+    }
+
     function importCard(item) {
+        if (item.workflow) return workflowCard(item);
         const card = el("div", "fla-cv-impcard");
 
         const top = el("div", "head");
@@ -339,6 +415,8 @@ export function buildDownloadsView({ onFinished = null, onNeedKey = null } = {})
         },
         /** 탭을 열 때. 도는 중이면 따라붙고, 가져올 것도 찾아본다. */
         async activate() {
+            // 받은 줄에 종류 이름을 붙이려면 이름표가 먼저 있어야 한다
+            await loadKinds();
             await watch();
             await loadImports();
         },

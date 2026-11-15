@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import time
 from urllib.parse import quote, urlparse
 
@@ -160,7 +161,7 @@ def _lora_info(name):
         "has_info": bool(civitai),
         "size": metadata.get("size") or os.path.getsize(full),
         "preview": preview,
-        "preview_type": "video" if preview_path and os.path.splitext(preview_path)[1].lower() in (".mp4", ".webm") else "image",
+        "preview_type": "video" if models.is_video_preview(preview_path) else "image",
     }
 
 
@@ -210,7 +211,7 @@ async def get_lora_detail(request):
         except OSError:
             stamp = 0
         preview = f"/fla/lora-preview?name={quote(name)}&v={stamp}"
-        if os.path.splitext(preview_path)[1].lower() in (".mp4", ".webm"):
+        if models.is_video_preview(preview_path):
             preview_type = "video"
 
     # 예시 이미지. 원격 URL 이라 등급을 함께 넘겨 프론트에서 가릴 수 있게 한다.
@@ -278,7 +279,7 @@ MAX_PREVIEW_BYTES = models.MAX_PREVIEW_BYTES
 
 
 def _write_preview(name, blob, ext):
-    """대표 이미지를 <로라이름>.preview.<확장자> 로 저장하고 메타데이터를 가리킨다."""
+    """대표 이미지를 <로라이름>.preview.<확장자>.node 로 저장하고 메타데이터를 가리킨다."""
     target, error = models.write_preview(LORAS, name, blob, ext)
     # 로라 화면은 "LoRA not found" 라는 말을 그대로 보여준다
     return target, ("LoRA not found" if error == "Model not found" else error)
@@ -391,12 +392,9 @@ async def post_lora_delete(request):
 
     stem = os.path.splitext(full)[0]
     metadata_path = stem + ".metadata.json"
-    # 곁다리 파일은 이름 규칙이 여럿이다(.preview.png, .png, ...).
+    # 곁다리 파일은 이름 규칙이 여럿이다(.preview.png.node, .preview.png, .png, ...).
     # 메타데이터가 딴 이름을 가리키고 있을 수도 있어 그것도 같이 본다.
-    targets = [full, metadata_path]
-    for ext in PREVIEW_EXTS:
-        targets.append(stem + ".preview" + ext)
-        targets.append(stem + ext)
+    targets = [full, metadata_path, *models.preview_files(stem)]
     configured = _preview_path(stem, _load_metadata(metadata_path).get("preview_url"))
     if configured:
         targets.append(configured)
@@ -472,7 +470,7 @@ async def get_lora_preview(request):
             pass
     preview = _preview_path(stem, configured)
     if preview:
-        return web.FileResponse(preview)
+        return models.preview_response(preview)
     raise web.HTTPNotFound()
 
 
@@ -707,3 +705,53 @@ async def post_open_folder(request):
     except OSError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
     return web.json_response({"ok": True, "path": target})
+
+
+# -------------------------------------------------- 서버 재시작
+
+
+def _restart_command():
+    """지금 떠 있는 ComfyUI 를 같은 인자로 다시 띄우는 명령.
+
+    ComfyUI-Manager 의 재시작과 같은 방식이다. --windows-standalone-build 는
+    뺀다 — 이게 있으면 다시 뜰 때 브라우저 탭이 하나 더 열린다.
+    """
+    argv = [a for a in sys.argv if a != "--windows-standalone-build"]
+    if argv[0].endswith("__main__.py"):  # python -m 으로 띄운 경우
+        return [sys.executable, "-m", os.path.basename(os.path.dirname(argv[0]))] + argv[1:]
+    if sys.platform.startswith("win32"):
+        # 윈도우의 execv 는 인자를 따옴표로 감싸 주지 않는다(공백 있는 경로가 깨진다)
+        return ['"' + sys.executable + '"', '"' + argv[0] + '"'] + argv[1:]
+    return [sys.executable] + argv
+
+
+def _restart_now():
+    try:
+        sys.stdout.close_log()  # ComfyUI 가 바꿔 끼운 로그 출력을 정리한다
+    except Exception:
+        pass
+    # comfy-cli 로 띄웠으면 그쪽이 다시 띄운다. 표시 파일만 남기고 끝낸다.
+    session = os.environ.get("__COMFY_CLI_SESSION__")
+    if session:
+        with open(session + ".reboot", "w"):
+            pass
+        print("\n[SM1000] Restarting...\n", flush=True)
+        os._exit(0)
+    command = _restart_command()
+    print(f"\n[SM1000] Restarting... {command}\n", flush=True)
+    os.execv(sys.executable, command)
+
+
+@routes.post("/fla/restart")
+async def post_restart(request):
+    """ComfyUI 를 다시 띄운다. 답을 보낸 뒤에 내려간다.
+
+    JSON 으로만 받는다. 다른 사이트의 폼이 몰래 보내는 요청(JSON 을 못 싣는다)
+    으로 서버가 내려가지 않게 하려는 것이다.
+    """
+    if request.content_type != "application/json":
+        return web.json_response({"ok": False, "error": "Bad request"}, status=400)
+    import asyncio
+    # 답이 브라우저에 닿을 틈을 준다
+    asyncio.get_running_loop().call_later(0.5, _restart_now)
+    return web.json_response({"ok": True})

@@ -226,6 +226,13 @@ async def grab(job):
     folder = job.get("folder") or ""
     target = civitai._resolve_target(folder, path.split("/")[-1], kind)
     part = target + ".part"
+    civitai._dl["current"] = {
+        "title": path.split("/")[-1],
+        "file_name": os.path.basename(target),
+        "folder": folder or "/",
+        "kind": kind,
+        "source": "huggingface",
+    }
 
     def progress(received, total):
         civitai._dl["received"] = received
@@ -259,7 +266,7 @@ async def grab(job):
         civitai.invalidate_installed()
     except Exception:
         pass
-    return {"file_name": os.path.basename(target), "folder": folder, "kind": kind}
+    return {"file_name": os.path.basename(target), "folder": folder, "kind": kind, "path": target}
 
 
 def _cleanup(path):

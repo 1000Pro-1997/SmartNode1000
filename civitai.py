@@ -50,6 +50,9 @@ TYPE_TO_KIND = {
     "Controlnet": "controlnet",
     "Upscaler": "upscale_models",
     "TextualInversion": "embeddings",
+    "Hypernetwork": "hypernetworks",
+    "MotionModule": "animatediff_models",
+    "Detection": "ultralytics_bbox",
     "Workflows": "workflows",
     "Wildcards": "wildcards",
 }
@@ -1021,6 +1024,8 @@ _dl = {
     "cancelled": False,
     "errors": [],
     "finished_at": 0,
+    # 끝난 줄마다 붙이는 번호. 화면이 "폴더 열기" 를 누를 때 이 번호로 가리킨다.
+    "seq": 0,
 }
 _dl_task = None
 
@@ -1309,9 +1314,10 @@ async def _write_sidecars(path, version, model, sha256):
     if image:
         try:
             blob, ext = await _download_image(image["url"])
-            with open(stem + ".preview" + ext, "wb") as f:
+            target = models.preview_file(stem, ext)
+            with open(target, "wb") as f:
                 f.write(blob)
-            data["preview_url"] = os.path.basename(stem + ".preview" + ext)
+            data["preview_url"] = os.path.basename(target)
             level = image.get("nsfwLevel")
             data["preview_nsfw_level"] = level if isinstance(level, int) else 0
         except (CivitaiError, OSError):
@@ -1349,6 +1355,7 @@ async def download_version(version_id, folder, api_key, verify=True, kind=None):
         "file_name": os.path.basename(path),
         "folder": folder or "/",
         "kind": kind,
+        "source": "civitai",
     }
 
     def progress(received, total):
@@ -1388,7 +1395,8 @@ async def download_version(version_id, folder, api_key, verify=True, kind=None):
             # 어디서 받았는지와 받았을 때의 모습을 남긴다. 나중에 새 버전을
             # 합칠 때(머지) 이 원본이 있어야 내가 고친 것을 가려낼 수 있다.
             await _remember_workflows(made, root, version, model, folder)
-        return {"path": root, "files": made, "kind": kind,
+        return {"path": os.path.join(root, *made[0].split("/")) if made else root,
+                "files": made, "kind": kind,
                 "file_name": os.path.basename(path), "folder": folder}
 
     model = None
@@ -1414,15 +1422,24 @@ def _job_name(job):
 
 
 def _remember_done(job, got=None, error="", login_needed=False):
-    """끝난 것을 관리창에 보여줄 만큼만 남긴다."""
+    """끝난 것을 관리창에 보여줄 만큼만 남긴다.
+
+    폴더와 종류는 실제로 들어간 자리(got) 를 먼저 쓴다. 가져오기처럼 갈 곳을
+    받으면서 정하는 일은 job 에 빈 값만 들어 있다.
+    """
+    got = got or {}
+    _dl["seq"] += 1
     _dl["recent"].append({
+        "id": _dl["seq"],
         # 막힌 것은 브라우저로 가야 한다. 갈 곳을 함께 남긴다.
         "url": job.get("url") or "",
         "login_needed": login_needed,
-        "title": job.get("title") or (got or {}).get("file_name") or "",
-        "file_name": (got or {}).get("file_name") or "",
-        "folder": job.get("folder") or "",
-        "kind": job.get("kind") or (got or {}).get("kind") or "",
+        "title": job.get("title") or got.get("file_name") or "",
+        "file_name": got.get("file_name") or "",
+        "folder": got.get("folder") or job.get("folder") or "",
+        "kind": got.get("kind") or job.get("kind") or "",
+        # 들어간 파일의 절대 경로. "폴더 열기" 가 쓴다.
+        "path": got.get("path") or "",
         "source": job.get("source") or "civitai",
         "error": error,
         "at": int(time.time()),
@@ -1545,6 +1562,27 @@ def _public_download():
 @routes.get("/fla/civitai/download-status")
 async def get_civitai_download_status(request):
     return web.json_response({"ok": True, "download": _public_download()})
+
+
+@routes.post("/fla/civitai/download-reveal")
+async def post_civitai_download_reveal(request):
+    """받은 것(최근 목록의 한 줄)이 들어간 폴더를 탐색기로 연다.
+
+    경로는 화면에서 받지 않는다. 서버가 기억해 둔 줄을 번호로 찾는다 —
+    아무 경로나 열게 하지 않으려는 것이다.
+    """
+    try:
+        body = await request.json()
+        wanted = int(body.get("id"))
+    except Exception:
+        return web.json_response({"ok": False, "error": "Bad request"}, status=400)
+    entry = next((e for e in _dl["recent"] if e.get("id") == wanted), None)
+    if entry is None or not entry.get("path"):
+        return web.json_response({"ok": False, "error": "Not found"}, status=404)
+    error = models.reveal(entry["path"])
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=404)
+    return web.json_response({"ok": True})
 
 
 @routes.post("/fla/civitai/download-cancel")

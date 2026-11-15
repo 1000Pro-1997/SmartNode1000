@@ -33,6 +33,7 @@ Check a box, and both go in. That's the whole idea.
 | **SN1000 Lora Theme** | Theme/preset library shared across every workflow, stored as JSON |
 | **SN1000 Lora Checklist** | Multi-select checklist stored inside the node itself |
 | **SN1000 Resolution** | Resolution picker with ratio lock and favourites |
+| **SN1000 Group Toggle** | Bypass or mute whole canvas groups from a checklist, with radio-style toggle groups |
 
 ---
 
@@ -87,7 +88,10 @@ Save it into the preset and it comes back that way every time.
 > **Where do the previews come from?**
 > SmartNode1000 reads the standard sidecar files that sit next to your LoRA —
 > `<lora>.preview.png` (also `.jpg`, `.jpeg`, `.webp`, `.mp4`, `.webm`) and the
-> `<lora>.metadata.json` file.
+> `<lora>.metadata.json` file. Previews it saves get a `.node` tail
+> (`<lora>.preview.jpeg.node`) so File Explorer does not show them as thumbnails when
+> you open a model folder; existing `<lora>.preview.*` files are renamed the same way the
+> first time they are shown. `<lora>.jpeg`-style previews from other tools are left alone.
 >
 > No sidecar files yet? Press **Civitai** in the LoRA picker and SmartNode1000 fetches
 > them for you — see below. You can also drop an image onto a LoRA here to set its
@@ -262,8 +266,15 @@ it. The file name does not matter; `model (1).safetensors` still finds its own p
 
 Not on Civitai? Then the file is asked instead. SmartNode1000 reads the header of the
 safetensors or GGUF — a few tens of KB, however large the file is — and tells from the
-tensor names whether it is a LoRA, a checkpoint, a UNet, a VAE or a text encoder. When
-it cannot tell, it says so and lets you pick, rather than guessing wrong.
+tensor names whether it is a LoRA, checkpoint, UNet/DiT, VAE, text encoder (including
+Qwen/Gemma/Mistral-style LLM encoders), CLIP Vision, ControlNet, model patch, latent
+upscaler, audio encoder or embedding. When the header says nothing, the file name is the
+last hint. When it still cannot tell, the file stays in Downloads and you pick the type —
+it is never dropped into the LoRA folder as a guess.
+
+Every finished line under **Recent** shows where the file actually went (type and
+folder) and whether it came from Civitai, Hugging Face or your PC. Click it to open that
+folder with the file selected.
 
 ---
 
@@ -388,6 +399,27 @@ An item can carry any number of LoRAs, or none at all — a pure prompt toggle i
 
 ---
 
+### Switch whole groups on and off
+
+**SN1000 Group Toggle** is a checklist for the groups on your canvas. Each item names the
+groups it covers — by title or by colour — and whether to bypass or mute them. Tick the item
+and every node in those groups changes mode; untick it and they run again.
+
+The toggle reads the canvas instead of remembering a value. Bypass a group by hand, or through
+another item, and the item that covers it lights up on its own. If only part of the group is
+in that state — a node was muted where the item says bypass, or half the nodes were switched
+back — the row turns yellow, and one click sets the whole group straight.
+
+Items live in **toggle groups** — a Default group to begin with, plus any you create — and
+each group is a box with its name on it. A group is either **any number** (tick as many as
+you like) or **one at a time** (ticking one unticks the rest, so their groups run again —
+a pipeline switch), and it can carry a colour so the box stands out. A name filter matches
+the whole title or just part of it, whichever you pick. **All on** / **All off** in the header
+apply or undo every item at once, and **Options** can add an item for every group name or
+every group colour on the canvas in one go — or clear them again.
+
+---
+
 ### Two kinds of storage, on purpose
 
 **Themes are saved to JSON files.** Shared across everything — edit a preset once and
@@ -443,7 +475,7 @@ with it for the models Civitai does not carry. **No separate LoRA manager is nee
 and none is assumed.
 
 The files it writes are the ordinary sidecars that sit next to each LoRA
-(`<lora>.metadata.json`, `<lora>.preview.*`), so a library some other tool filled in
+(`<lora>.metadata.json`, `<lora>.preview.*.node`), so a library some other tool filled in
 already works on first run, and nothing SmartNode1000 fetches is locked inside it.
 
 ---

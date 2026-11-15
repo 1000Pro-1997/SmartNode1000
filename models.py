@@ -30,16 +30,39 @@ routes = PromptServer.instance.routes
 #   folder  : folder_paths 가 아는 폴더 이름
 #   label   : 카드 배지에 붙는 말("Checkpoint | SDXL")
 #   civitai : Civitai API 의 types 값
+#
+# ComfyUI 판이나 깔린 확장에 따라 없는 폴더가 있다(ipadapter·sams 등은
+# 확장이 등록한다). 등록되지 않은 폴더의 종류는 없는 것으로 친다(known).
 KINDS = {
     "loras": {"folder": "loras", "label": "LoRA", "civitai": "LORA"},
     "checkpoints": {"folder": "checkpoints", "label": "Checkpoint", "civitai": "Checkpoint"},
     "diffusion_models": {"folder": "diffusion_models", "label": "UNet", "civitai": ""},
     "vae": {"folder": "vae", "label": "VAE", "civitai": "VAE"},
     "text_encoders": {"folder": "text_encoders", "label": "Text encoder", "civitai": ""},
-    "controlnet": {"folder": "controlnet", "label": "ControlNet", "civitai": "Controlnet"},
-    "upscale_models": {"folder": "upscale_models", "label": "Upscaler", "civitai": "Upscaler"},
-    "embeddings": {"folder": "embeddings", "label": "Embedding", "civitai": "TextualInversion"},
     "clip_vision": {"folder": "clip_vision", "label": "CLIP Vision", "civitai": ""},
+    "controlnet": {"folder": "controlnet", "label": "ControlNet", "civitai": "Controlnet"},
+    "model_patches": {"folder": "model_patches", "label": "Model patch", "civitai": ""},
+    "upscale_models": {"folder": "upscale_models", "label": "Upscaler", "civitai": "Upscaler"},
+    "latent_upscale_models": {"folder": "latent_upscale_models", "label": "Latent upscaler", "civitai": ""},
+    "embeddings": {"folder": "embeddings", "label": "Embedding", "civitai": "TextualInversion"},
+    "hypernetworks": {"folder": "hypernetworks", "label": "Hypernetwork", "civitai": "Hypernetwork"},
+    "style_models": {"folder": "style_models", "label": "Style model", "civitai": ""},
+    "audio_encoders": {"folder": "audio_encoders", "label": "Audio encoder", "civitai": ""},
+    "photomaker": {"folder": "photomaker", "label": "PhotoMaker", "civitai": ""},
+    "gligen": {"folder": "gligen", "label": "GLIGEN", "civitai": ""},
+    "detection": {"folder": "detection", "label": "Detection", "civitai": ""},
+    "background_removal": {"folder": "background_removal", "label": "Background removal", "civitai": ""},
+    "frame_interpolation": {"folder": "frame_interpolation", "label": "Frame interpolation", "civitai": ""},
+    "vae_approx": {"folder": "vae_approx", "label": "VAE approx", "civitai": ""},
+    # 확장이 등록하는 폴더
+    "ipadapter": {"folder": "ipadapter", "label": "IPAdapter", "civitai": ""},
+    "sams": {"folder": "sams", "label": "SAM", "civitai": ""},
+    "ultralytics_bbox": {"folder": "ultralytics_bbox", "label": "YOLO bbox", "civitai": "Detection"},
+    "ultralytics_segm": {"folder": "ultralytics_segm", "label": "YOLO segm", "civitai": ""},
+    "animatediff_models": {"folder": "animatediff_models", "label": "Motion module", "civitai": "MotionModule"},
+    "animatediff_motion_lora": {"folder": "animatediff_motion_lora", "label": "Motion LoRA", "civitai": ""},
+    "insightface": {"folder": "insightface", "label": "InsightFace", "civitai": ""},
+    "facerestore_models": {"folder": "facerestore_models", "label": "Face restore", "civitai": ""},
 }
 
 # '내 모델' 탭에서 오갈 수 있는 종류. 해시로 정보를 채우고 업데이트를
@@ -51,6 +74,13 @@ DEFAULT_KIND = "loras"
 # 대표 이미지로 쓸 수 있는 형식
 PREVIEW_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm")
 VIDEO_EXTS = (".mp4", ".webm")
+PREVIEW_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".webp": "image/webp", ".gif": "image/gif",
+                 ".mp4": "video/mp4", ".webm": "video/webm"}
+# 대표 이미지 맨 뒤에 붙이는 꼬리표(<이름>.preview.jpeg.node).
+# 탐색기가 모르는 확장자라 썸네일을 그리지 않는다 — 성인물 대표 이미지가
+# 모델 폴더를 열 때마다 그대로 보이지 않게 하려는 것이다.
+HIDE_SUFFIX = ".node"
 # 업로드 상한. 예시 영상이 몇 MB 씩 하므로 넉넉히 잡는다.
 MAX_PREVIEW_BYTES = 64 * 1024 * 1024
 # Civitai nsfwLevel 비트마스크에서 R 등급(4) 이상이면 성인물로 본다.
@@ -60,15 +90,25 @@ ADULT_LEVEL = 4
 # -------------------------------------------------- 종류
 
 
+def _registered(folder):
+    return bool(folder) and folder in folder_paths.folder_names_and_paths
+
+
 def known(kind):
-    """아는 종류인지."""
-    return kind in KINDS
+    """아는 종류이고 ComfyUI 에 그 폴더가 등록되어 있는지."""
+    entry = KINDS.get(kind)
+    return bool(entry) and _registered(entry["folder"])
+
+
+def available():
+    """지금 쓸 수 있는 종류들. KINDS 순서 그대로."""
+    return [kind for kind in KINDS if known(kind)]
 
 
 def folder_of(kind):
-    """folder_paths 폴더 이름. 모르는 종류면 None."""
+    """folder_paths 폴더 이름. 모르거나 등록되지 않은 종류면 None."""
     entry = KINDS.get(kind)
-    return entry["folder"] if entry else None
+    return entry["folder"] if entry and _registered(entry["folder"]) else None
 
 
 def label_of(kind):
@@ -134,21 +174,80 @@ def paths(kind, name):
     return full, os.path.splitext(full)[0] + ".metadata.json"
 
 
+def preview_file(stem, ext):
+    """이 모델의 대표 이미지를 새로 쓸 자리."""
+    return stem + ".preview" + ext + HIDE_SUFFIX
+
+
+def preview_ext(path):
+    """대표 이미지의 진짜 확장자. 숨김 꼬리표는 떼고 본다."""
+    if path.lower().endswith(HIDE_SUFFIX):
+        path = path[:-len(HIDE_SUFFIX)]
+    return os.path.splitext(path)[1].lower()
+
+
+def is_video_preview(path):
+    return bool(path) and preview_ext(path) in VIDEO_EXTS
+
+
+def preview_files(stem):
+    """이 모델 옆에 있을 수 있는 대표 이미지 이름 전부. 숨긴 것이 앞이다."""
+    return ([preview_file(stem, e) for e in PREVIEW_EXTS]
+            + [stem + ".preview" + e for e in PREVIEW_EXTS]
+            + [stem + e for e in PREVIEW_EXTS])
+
+
+def _hide(stem, path):
+    """드러나 있는 <이름>.preview.<확장자> 를 숨긴 이름으로 바꾼다.
+
+    LoRA Manager 가 쓰는 <이름>.jpeg 처럼 .preview 가 없는 것은 그 도구의
+    파일이거나 사용자 파일이라 건드리지 않는다.
+    바꾸지 못하면 원래 경로를 그대로 준다.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in PREVIEW_EXTS or os.path.normcase(path) != os.path.normcase(stem + ".preview" + ext):
+        return path
+    target = preview_file(stem, ext)
+    try:
+        os.replace(path, target)
+    except OSError:
+        return path
+    metadata_path = stem + ".metadata.json"
+    metadata = load_metadata(metadata_path)
+    configured = metadata.get("preview_url")
+    # 이름만 적혀 있을 수도, 절대 경로로 적혀 있을 수도 있다. 적힌 꼴을 지킨다.
+    if isinstance(configured, str) and os.path.basename(configured.replace("\\", "/")).lower() \
+            == os.path.basename(path).lower():
+        metadata["preview_url"] = target if os.path.isabs(configured) else os.path.basename(target)
+        try:
+            save_metadata(metadata_path, metadata)
+        except OSError:
+            pass  # 못 고쳐도 숨긴 이름을 후보로 찾으므로 계속 보인다
+    return target
+
+
 def preview_path(kind, stem, configured=None):
-    """대표 이미지 파일을 찾는다. 메타데이터가 가리키는 것을 먼저 본다."""
+    """대표 이미지 파일을 찾는다. 메타데이터가 가리키는 것을 먼저 본다.
+
+    드러난 이름으로 놓인 것을 찾으면 그 자리에서 숨긴 이름으로 바꾼다.
+    """
     if isinstance(configured, str) and not os.path.isabs(configured):
         configured = os.path.join(os.path.dirname(stem), configured)
-    candidates = ([configured] if isinstance(configured, str) else []) + [
-        stem + ext for ext in
-        tuple(".preview" + e for e in PREVIEW_EXTS) + PREVIEW_EXTS
-    ]
+    candidates = ([configured] if isinstance(configured, str) else []) + preview_files(stem)
     for candidate in candidates:
         if not candidate or candidate.startswith(("http://", "https://")):
             continue
         resolved = inside_roots(kind, candidate)
         if resolved and os.path.isfile(resolved):
-            return resolved
+            # 심볼릭 링크를 따라간 실제 자리 기준으로 이름을 맞춘다
+            return _hide(os.path.join(os.path.dirname(resolved), os.path.basename(stem)), resolved)
     return None
+
+
+def preview_response(path):
+    """대표 이미지를 내려보낸다. 꼬리표 때문에 형식을 짐작하지 못하므로 직접 적는다."""
+    kind = PREVIEW_TYPES.get(preview_ext(path), "application/octet-stream")
+    return web.FileResponse(path, headers={"Content-Type": kind})
 
 
 # -------------------------------------------------- 곁다리 파일
@@ -174,7 +273,7 @@ def save_metadata(metadata_path, data):
 
 
 def write_preview(kind, name, blob, ext):
-    """대표 이미지를 <이름>.preview.<확장자> 로 저장하고 메타데이터가 가리키게 한다.
+    """대표 이미지를 <이름>.preview.<확장자>.node 로 저장하고 메타데이터가 가리키게 한다.
 
     확장자가 바뀔 수 있으므로(png -> mp4) 예전 preview 파일은 지운다.
     돌려주는 값은 (저장한 경로, 오류 메시지) 이고 성공하면 오류가 None 이다.
@@ -185,14 +284,14 @@ def write_preview(kind, name, blob, ext):
     stem = os.path.splitext(full)[0]
 
     for old_ext in PREVIEW_EXTS:
-        old_file = stem + ".preview" + old_ext
-        if os.path.isfile(old_file):
-            try:
-                os.remove(old_file)
-            except OSError:
-                pass  # 못 지워도 메타데이터가 새 파일을 가리키게 된다
+        for old_file in (stem + ".preview" + old_ext, preview_file(stem, old_ext)):
+            if os.path.isfile(old_file):
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass  # 못 지워도 메타데이터가 새 파일을 가리키게 된다
 
-    target = stem + ".preview" + ext
+    target = preview_file(stem, ext)
     try:
         with open(target, "wb") as f:
             f.write(blob)
@@ -272,7 +371,7 @@ def info(kind, name):
         "has_info": bool(civitai),
         "size": metadata.get("size") or size,
         "preview": preview,
-        "preview_type": "video" if found and os.path.splitext(found)[1].lower() in VIDEO_EXTS else "image",
+        "preview_type": "video" if is_video_preview(found) else "image",
     }
 
 
@@ -301,7 +400,7 @@ def detail(kind, name):
         except OSError:
             stamp = 0
         preview = f"/fla/model-preview?kind={quote(kind)}&name={quote(name)}&v={stamp}"
-        if os.path.splitext(found)[1].lower() in VIDEO_EXTS:
+        if is_video_preview(found):
             preview_type = "video"
 
     # 예시 이미지. 원격 URL 이라 등급을 함께 넘겨 화면에서 가릴 수 있게 한다.
@@ -369,7 +468,7 @@ def library(kind):
 def delete(kind, name):
     """모델 파일과 옆에 놓인 것들을 지운다. (지운 목록, 오류) 를 준다.
 
-    곁다리 파일은 이름 규칙이 여럿이다(.preview.png, .png, ...).
+    곁다리 파일은 이름 규칙이 여럿이다(.preview.png.node, .preview.png, .png, ...).
     메타데이터가 딴 이름을 가리키고 있을 수도 있어 그것도 같이 본다.
     """
     full, metadata_path = paths(kind, name)
@@ -380,10 +479,7 @@ def delete(kind, name):
         return None, "Model not found"
 
     stem = os.path.splitext(full)[0]
-    targets = [full, metadata_path]
-    for ext in PREVIEW_EXTS:
-        targets.append(stem + ".preview" + ext)
-        targets.append(stem + ext)
+    targets = [full, metadata_path, *preview_files(stem)]
     configured = preview_path(kind, stem, load_metadata(metadata_path).get("preview_url"))
     if configured:
         targets.append(configured)
@@ -451,11 +547,11 @@ def _kind_of(source, default=DEFAULT_KIND):
 
 @routes.get("/fla/model-kinds")
 async def get_model_kinds(request):
-    """화면이 종류 고르는 칸을 만들 때 쓴다."""
+    """화면이 종류 고르는 칸을 만들 때 쓴다. 폴더가 등록된 것만 준다."""
     return web.json_response({
         "ok": True,
-        "kinds": [{"kind": k, "label": v["label"], "civitai": v["civitai"],
-                   "main": k in MAIN_KINDS} for k, v in KINDS.items()],
+        "kinds": [{"kind": k, "label": KINDS[k]["label"], "civitai": KINDS[k]["civitai"],
+                   "main": k in MAIN_KINDS} for k in available()],
     })
 
 
@@ -482,7 +578,7 @@ async def get_model_preview(request):
     found = preview_path(kind, stem, load_metadata(metadata_path).get("preview_url"))
     if not found:
         raise web.HTTPNotFound()
-    return web.FileResponse(found)
+    return preview_response(found)
 
 
 @routes.get("/fla/model-detail")

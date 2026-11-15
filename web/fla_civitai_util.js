@@ -126,6 +126,8 @@ export function addCivitaiStyles() {
       .fla-cv-dlrow .name{flex:1;min-width:0;color:#dde2e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .fla-cv-dlrow .to{flex:none;max-width:44%;color:#98a1ad;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .fla-cv-dlrow.bad{border-color:#5c2a24;background:#2a1e1c}.fla-cv-dlrow.bad .to{color:#ff9a8f}
+      .fla-cv-dlrow.open{cursor:pointer}.fla-cv-dlrow.open:hover{background:#2b3138;border-color:#4a5260}
+      .fla-cv-dlrow.open .pi{flex:none;color:#7d858f;font-size:12px}.fla-cv-dlrow.open:hover .pi{color:#4dabf7}
       .fla-cv-dlopen{flex:none;padding:2px 9px;color:#fff;background:#2f6fd0;border-radius:5px;font-size:11px;text-decoration:none;white-space:nowrap}.fla-cv-dlopen:hover{background:#3b82f6}
       .fla-cv-session{margin-top:10px;padding-top:9px;border-top:1px solid #343a43}
       .fla-cv-session>summary{display:flex;align-items:center;gap:7px;color:#98a1ad;font-size:12px;cursor:pointer;list-style:none}
@@ -153,6 +155,7 @@ export function addCivitaiStyles() {
       .fla-cv-impcard .marks span{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap}
       .fla-cv-impcard .marks .kind{color:#fff;background:#1971c2}
       .fla-cv-impcard .marks .kind.dim{color:#98a1ad;background:#2b3138;font-weight:400}
+      .fla-cv-impcard .marks .kind.wf{background:#7048b6}
       .fla-cv-impcard .marks .base{color:#c8cdd5;background:#2b3138;font-weight:400;max-width:100%;overflow:hidden;text-overflow:ellipsis}
       .fla-cv-impcard .marks .dup{color:#171717;background:#ffd84d}
       .fla-cv-impcard .facts{display:flex;flex-wrap:wrap;gap:9px;color:#7d858f;font-size:11px}
@@ -161,7 +164,7 @@ export function addCivitaiStyles() {
       .fla-cv-impcard .acts .fla-cv-dltake{height:28px}
       .fla-cv-impcard .err{color:#ff9a8f;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
       .fla-cv-dlsrc{flex:none;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700}
-      .fla-cv-dlsrc.cv{color:#fff;background:#1971c2}.fla-cv-dlsrc.hf{color:#171717;background:#ffd21e}
+      .fla-cv-dlsrc.cv{color:#fff;background:#1971c2}.fla-cv-dlsrc.hf{color:#171717;background:#ffd21e}.fla-cv-dlsrc.pc{color:#dde2e8;background:#4a5260}
       .fla-cv-kinds{display:flex;gap:5px;margin-bottom:11px}
       .fla-cv-kinds button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 10px;color:#c8cdd5;background:#22262d;border:1px solid #3b424d;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer}
       .fla-cv-kinds button:hover{background:#2b3138}

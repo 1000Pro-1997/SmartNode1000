@@ -20,6 +20,7 @@
     훑는 폴더 밖의 경로는 받지 않는다.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -38,6 +39,9 @@ MODEL_EXTS = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".sft", "
 MAX_FOUND = 60
 # 아직 받는 중인 파일은 건드리지 않는다(브라우저가 붙이는 꼬리표들)
 PARTIAL_EXTS = (".part", ".crdownload", ".download", ".tmp", ".!ut")
+# 워크플로우로 볼 JSON 의 크기 상한. 워크플로우는 커야 몇 MB 다 —
+# 이보다 큰 JSON 은 열어 보지도 않는다(데이터 덤프 같은 것들).
+MAX_WORKFLOW_BYTES = 48 * 1024 * 1024
 
 
 def _download_dir():
@@ -103,6 +107,52 @@ def look_inside(path, stat):
     return found
 
 
+# JSON 을 들여다본 결과. (수정 시각, 크기) 가 그대로면 다시 읽지 않는다.
+_WF_CACHE = {}
+
+
+def _workflow_nodes(data):
+    """ComfyUI 워크플로우 JSON 이면 노드 수를, 아니면 0 을 준다.
+
+    다운로드 폴더에는 온갖 JSON 이 떨어진다(설정 내보내기, 데이터 덤프).
+    워크플로우인 척 끼어들지 못하게 두 가지 저장 모양만 받는다 —
+    화면 저장본(nodes 배열과 links 같은 표식)과 API 본(모든 값이
+    class_type 을 든 사전).
+    """
+    if not isinstance(data, dict) or not data:
+        return 0
+    nodes = data.get("nodes")
+    if isinstance(nodes, list):
+        typed = sum(1 for node in nodes
+                    if isinstance(node, dict) and isinstance(node.get("type"), str))
+        # nodes 배열만으로는 다른 프로그램의 그래프일 수 있다. ComfyUI
+        # 저장본이 늘 함께 적는 표식을 하나는 요구한다.
+        if typed and any(mark in data for mark in ("links", "last_node_id", "version")):
+            return typed
+        return 0
+    classed = [value for value in data.values()
+               if isinstance(value, dict) and isinstance(value.get("class_type"), str)]
+    # 항목 전부가 노드여야 API 본으로 본다. 하나라도 다르면 남의 JSON 이다.
+    return len(classed) if classed and len(classed) == len(data) else 0
+
+
+def sniff_workflow(path, stat):
+    """이 JSON 이 워크플로우인지 알아본다. 노드 수를 주고, 아니면 0."""
+    key = (int(stat.st_mtime), stat.st_size)
+    hit = _WF_CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    count = 0
+    if 0 < stat.st_size <= MAX_WORKFLOW_BYTES:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                count = _workflow_nodes(json.load(f))
+        except (OSError, ValueError, UnicodeDecodeError):
+            count = 0
+    _WF_CACHE[path] = (key, count)
+    return count
+
+
 def scan():
     """가져올 만한 파일들. 새로 받은 것이 앞에 온다."""
     found = []
@@ -118,7 +168,7 @@ def scan():
             stem, ext = os.path.splitext(name)
             if ext.lower() in PARTIAL_EXTS:
                 continue  # 아직 받는 중
-            if ext.lower() not in MODEL_EXTS:
+            if ext.lower() not in MODEL_EXTS and ext.lower() != ".json":
                 continue
             try:
                 stat = os.stat(path)
@@ -126,8 +176,24 @@ def scan():
                 continue
             if not os.path.isfile(path):
                 continue
+            if ext.lower() == ".json":
+                # 워크플로우 JSON 도 가져온다. 워크플로우가 아닌 JSON 은
+                # 모델도 아니므로 아예 보여주지 않는다.
+                count = sniff_workflow(path, stat)
+                if not count:
+                    continue
+                found.append({
+                    "path": path, "name": name, "where": root,
+                    "size": stat.st_size, "modified": int(stat.st_mtime),
+                    "workflow": True, "nodes": count,
+                    "guess": "", "base_model": "", "title": stem,
+                    "tensors": 0, "format": "json", "folder": "",
+                })
+                continue
             inside = look_inside(path, stat)
             guess = inside.get("kind") or ""
+            # 폴더가 등록되지 않은 종류(확장이 없는 경우)로는 보낼 수 없다
+            guess = guess if models.known(guess) else ""
             # 카드가 "어디로 갈지" 를 미리 보여줄 수 있게 계산해 둔다.
             # 가져올 때 Civitai 가 더 나은 답을 주면 그쪽이 이긴다.
             going = folder_for(guess, inside.get("base_model") or name) if guess else ""
@@ -138,7 +204,7 @@ def scan():
                 "size": stat.st_size,
                 "modified": int(stat.st_mtime),
                 # 파일 안을 보고 짐작한 것들. 카드에 그대로 보여준다.
-                "guess": inside.get("kind") or "",
+                "guess": guess,
                 "base_model": inside.get("base_model") or "",
                 "title": inside.get("title") or "",
                 "tensors": inside.get("tensors") or 0,
@@ -171,7 +237,7 @@ def folder_for(kind, hint, allow_new=None):
 
 
 def move_in(path, kind, folder, file_name=None):
-    """파일을 모델 폴더로 옮긴다. 옮긴 자리의 상대 이름을 준다."""
+    """파일을 모델 폴더로 옮긴다. (옮긴 자리의 상대 이름, 절대 경로) 를 준다."""
     from . import civitai
 
     target = civitai._resolve_target(folder or "", file_name or os.path.basename(path), kind)
@@ -179,7 +245,23 @@ def move_in(path, kind, folder, file_name=None):
     shutil.move(path, target)
     models.invalidate(kind)
     roots = models.roots(kind)
-    return os.path.relpath(target, roots[0]).replace(os.sep, "/") if roots else os.path.basename(target)
+    rel = os.path.relpath(target, roots[0]).replace(os.sep, "/") if roots else os.path.basename(target)
+    return rel, target
+
+
+def take_workflow(path):
+    """워크플로우 JSON 을 ComfyUI 의 workflows 폴더로 옮긴다.
+
+    모델과 달리 해시도 Civitai 도 필요 없다 — 워크플로우인지는 훑을 때
+    이미 봤다. 같은 이름이 있으면 덮지 않고 번호가 붙는다(_resolve_target).
+    """
+    from . import civitai
+
+    target = civitai._resolve_target("", os.path.basename(path), "workflows")
+    shutil.move(path, target)
+    root = civitai._archive_root("workflows")
+    return (os.path.relpath(target, root).replace(os.sep, "/")
+            if root else os.path.basename(target))
 
 
 async def take(job):
@@ -201,6 +283,15 @@ async def take(job):
     except OSError:
         inside = {}
     guessed = inside.get("kind") or ""
+    guessed = guessed if models.known(guessed) else ""
+
+    civitai._dl["current"] = {
+        "title": os.path.basename(path),
+        "file_name": os.path.basename(path),
+        "folder": "",
+        "kind": chosen or guessed,
+        "source": "import",
+    }
 
     # 1) 해시. 큰 파일은 오래 걸리므로 진행률을 보여준다.
     total = os.path.getsize(path)
@@ -226,10 +317,18 @@ async def take(job):
     except civitai.CivitaiError:
         pass  # 물어보기 실패. 옮기는 것까지는 해준다.
 
-    # 고른 것 > Civitai 가 아는 것 > 파일이 말해주는 것 > 기본
-    kind = chosen or (said if models.known(said) else "") or guessed or models.DEFAULT_KIND
-    if not models.known(kind):
-        kind = models.DEFAULT_KIND
+    # Civitai 에는 VAE·텍스트 인코더 단품을 "Checkpoint" 로 올린 글이 꽤 있다.
+    # 그걸 체크포인트 폴더에 넣으면 체크포인트 로더가 못 읽는다. 파일 안이
+    # 단품이라고 분명히 말하면 그쪽을 믿는다.
+    if said == "checkpoints" and guessed in ("vae", "text_encoders"):
+        said = ""
+
+    # 고른 것 > Civitai 가 아는 것 > 파일이 말해주는 것.
+    # 아무도 모르면 옮기지 않는다 — 아무 데나(로라 폴더) 넣으면 목록만 어지럽히고
+    # 나중에 찾지도 못한다. 파일은 다운로드 폴더에 그대로 두고 고르게 한다.
+    kind = chosen or (said if models.known(said) else "") or guessed
+    if not kind:
+        raise civitai.CivitaiError("무슨 모델인지 알 수 없습니다 — 카드에서 종류를 골라 다시 가져오세요")
     if not folder and version:
         folder = civitai.suggest_folder(model or version.get("model") or {}, version, None, kind)
     if not folder:
@@ -243,7 +342,7 @@ async def take(job):
         primary = civitai._primary_file(version) or {}
         if primary.get("name"):
             wanted = primary["name"]
-    name = move_in(path, kind, folder, wanted)
+    name, target = move_in(path, kind, folder, wanted)
 
     # 4) 곁다리 정보와 대표 이미지
     if version:
@@ -281,9 +380,10 @@ async def take(job):
     except Exception:
         pass
     return {"file_name": os.path.basename(name), "folder": os.path.dirname(name), "kind": kind,
+            "path": target,
             "found": bool(version),
             # 무엇을 보고 정했는지. 화면이 "Civitai 가 알려줌" 처럼 보여준다.
-            "decided_by": "user" if chosen else ("civitai" if said else ("file" if guessed else "default"))}
+            "decided_by": "user" if chosen else ("civitai" if said else "file")}
 
 
 async def _hash_with_progress(path, total):
@@ -320,16 +420,31 @@ def _bad(message, status=400):
 async def get_import_scan(request):
     """다운로드 폴더에서 가져올 만한 파일을 찾아 준다."""
     found = scan()
-    known = {kind: set(models.names(kind)) for kind in models.KINDS}
+    known = {kind: set(models.names(kind)) for kind in models.available()}
+    # 워크플로우는 모델 폴더가 아니라 workflows 폴더의 이름과 견준다
+    have_workflows = set()
+    if any(item.get("workflow") for item in found):
+        try:
+            from . import civitai
+            wf_root = civitai._archive_root("workflows")
+        except Exception:
+            wf_root = None
+        if wf_root and os.path.isdir(wf_root):
+            for folder, dirs, files in os.walk(wf_root):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                have_workflows.update(f.lower() for f in files)
     items = []
     for item in found:
         base = item["name"].lower()
-        # 이미 같은 이름이 모델 폴더에 있으면 알려 준다(두 벌 만들지 않게)
+        # 이미 같은 이름이 있으면 알려 준다(두 벌 만들지 않게)
         already = ""
-        for kind, names in known.items():
-            if any(os.path.basename(n).lower() == base for n in names):
-                already = kind
-                break
+        if item.get("workflow"):
+            already = "workflows" if base in have_workflows else ""
+        else:
+            for kind, names in known.items():
+                if any(os.path.basename(n).lower() == base for n in names):
+                    already = kind
+                    break
         items.append({**item, "already": already})
     return web.json_response({"ok": True, "items": items, "folders": watched_dirs()})
 
@@ -351,6 +466,20 @@ async def post_import_take(request):
     path = _inside_watched(body.get("path") or "")
     if not path or not os.path.isfile(path):
         return _bad("File not found", 404)
+    if os.path.splitext(path)[1].lower() == ".json":
+        # 워크플로우는 대기열에 태울 것이 없다(해시도 Civitai 도 안 쓴다).
+        # 그 자리에서 옮기고 끝낸다.
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return _bad("File not found", 404)
+        if not sniff_workflow(path, stat):
+            return _bad("Not a workflow")
+        try:
+            name = take_workflow(path)
+        except Exception as e:
+            return _bad(str(e), 500)
+        return web.json_response({"ok": True, "workflow": {"name": name}})
     if os.path.splitext(path)[1].lower() not in MODEL_EXTS:
         return _bad("Bad file")
 

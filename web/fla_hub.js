@@ -12,12 +12,13 @@
 
 import { app } from "../../scripts/app.js";
 import { t } from "./fla_i18n.js";
-import { el } from "./fla_civitai_util.js";
+import { el, post } from "./fla_civitai_util.js";
 import { pickLora } from "./fla_lora_picker.js";
 import { pickWildcard } from "./fla_wildcard_picker.js";
 import { openCivitaiPanel } from "./fla_civitai.js";
 import { openModelManager } from "./fla_ckpt_picker.js";
 import { openWorkflowManager } from "./fla_workflow_picker.js";
+import { openSmartFill } from "./fla_smart_fill.js";
 
 // 액션바 버튼이 생긴 프론트엔드 판. 이보다 낮으면 옛 방식으로 붙인다.
 const MIN_ACTION_BAR = [1, 33, 9];
@@ -32,6 +33,7 @@ const TILES = [
     { icon: "pi pi-sitemap", title: "hubWorkflows", desc: "hubWorkflowsDesc", open: openWorkflowManager },
     { icon: "pi pi-hashtag", title: "hubWildcards", desc: "hubWildcardsDesc", open: pickWildcard },
     { icon: "pi pi-cloud-download", title: "hubCivitai", desc: "hubCivitaiDesc", open: openCivitaiPanel },
+    { icon: "pi pi-bolt", title: "hubSmartFill", desc: "hubSmartFillDesc", open: openSmartFill },
 ];
 
 
@@ -72,7 +74,14 @@ function addStyles() {
       .fla-hub-tile>i{display:grid;width:34px;height:34px;place-items:center;margin-bottom:2px;color:#4dabf7;background:#1b2b3d;border-radius:8px;font-size:16px}
       .fla-hub-name{color:#fff;font-size:14px;font-weight:700}
       .fla-hub-desc{color:#98a1ad;font-size:12px;line-height:1.5}
-      .fla-hub-foot{padding:9px 14px;background:#1d2026;border-top:1px solid #383e48;color:#7d858f;font-size:12px}
+      .fla-hub-foot{display:flex;align-items:center;gap:6px;padding:9px 14px;background:#1d2026;border-top:1px solid #383e48;color:#7d858f;font-size:12px}
+      .fla-hub-foot .tip{flex:1;min-width:0}
+      .fla-hub-foot button{flex:none;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;color:#dde2e8;background:#2b3138;border:1px solid #454c58;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+      .fla-hub-foot button:hover:not(:disabled){background:#353c46;border-color:#4dabf7}
+      .fla-hub-foot button:disabled{opacity:.5;cursor:default}
+      .fla-hub-foot button.go{color:#fff;background:#1971c2;border-color:#1971c2}
+      .fla-hub-foot button.go:hover:not(:disabled){background:#1c7ed6}
+      .fla-hub-foot button.warn:hover:not(:disabled){border-color:#ff8f6b;color:#ffb39b}
       .comfyui-button.fla-hub-btn{color:#fff;background:#1971c2}
       .comfyui-button.fla-hub-btn:hover{background:#1c7ed6}
     `;
@@ -116,13 +125,73 @@ export function openHub() {
         grid.appendChild(button);
     }
 
-    panel.append(head, grid, el("div", "fla-hub-foot", t("hubTip")));
+    panel.append(head, grid, buildFooter(shut));
     bg.appendChild(panel);
     closeButton.onclick = shut;
     bg.onclick = (event) => { if (event.target === bg) shut(); };
     document.addEventListener("keydown", key, true);
     document.body.appendChild(bg);
     grid.firstChild?.focus();
+}
+
+/** 아래 줄: 안내와 바로가기 단추(받기 관리·새로고침·재시작). */
+function buildFooter(shut) {
+    const foot = el("div", "fla-hub-foot");
+    const tip = el("span", "tip", t("hubTip"));
+
+    const button = (icon, label, tone = "") => {
+        const b = el("button", tone);
+        b.type = "button";
+        const i = el("i");
+        i.className = icon;
+        b.append(i, document.createTextNode(label));
+        return b;
+    };
+    const download = button("pi pi-download", t("hubDownloads"), "go");
+    const reload = button("pi pi-refresh", t("hubReload"));
+    const restart = button("pi pi-power-off", t("hubRestart"), "warn");
+    reload.title = t("hubReloadWhy");
+    restart.title = t("hubRestartWhy");
+
+    download.onclick = () => { shut(); openCivitaiPanel(null, "loras", null, "downloads"); };
+    reload.onclick = () => location.reload();
+    restart.onclick = async () => {
+        if (!confirm(t("hubRestartConfirm"))) return;
+        for (const b of [download, reload, restart]) b.disabled = true;
+        tip.textContent = t("hubRestarting");
+        try {
+            const { ok, data } = await post("/fla/restart");
+            if (!ok || !data?.ok) throw new Error(data?.error ?? "");
+        } catch (e) {
+            for (const b of [download, reload, restart]) b.disabled = false;
+            tip.textContent = t("hubTip");
+            toast(t("hubRestartFail") + (e.message || ""));
+            return;
+        }
+        // 내려갔다가 다시 올라오면 화면도 새로 받는다(새 노드·바뀐 스크립트가 들어오게)
+        await waitForRestart();
+        location.reload();
+    };
+
+    foot.append(tip, download, reload, restart);
+    return foot;
+}
+
+/** 서버가 내려갔다가 다시 답할 때까지 기다린다. */
+async function waitForRestart() {
+    const alive = async () => {
+        try {
+            const res = await fetch("/system_stats", { cache: "no-store" });
+            return res.ok;
+        } catch (e) {
+            return false;
+        }
+    };
+    const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+    // 내려가는 데 잠깐 걸린다. 그 전에 답하면 아직 옛 서버다.
+    for (let i = 0; i < 30 && await alive(); i++) await sleep(500);
+    // 큰 확장이 많으면 다시 뜨는 데 몇 분 걸리기도 한다
+    for (let i = 0; i < 300 && !await alive(); i++) await sleep(1000);
 }
 
 

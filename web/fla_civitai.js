@@ -138,7 +138,7 @@ const STEPS = [
 
 /** Civitai 창을 연다. onFinished 는 로라 목록이 바뀌었을 때 부른다
  *  (정보를 채웠거나 새 모델을 받았을 때). */
-export function openCivitaiPanel(onFinished = null, startKind = "loras", browseType = null) {
+export function openCivitaiPanel(onFinished = null, startKind = "loras", browseType = null, startTab = null) {
     addCivitaiStyles();
     // 지금 보고 있는 내 모델 종류. 위쪽 단추로 바꾼다.
     let kind = MY_KINDS.some(([value]) => value === startKind) ? startKind : "loras";
@@ -535,7 +535,10 @@ export function openCivitaiPanel(onFinished = null, startKind = "loras", browseT
 
     // 워크플로우 창에서 열면 바로 "모델 찾기" 로 가서 그 카테고리를 보여준다.
     // 워크플로우는 해시로 찾을 수 있는 것이 아니라 "내 모델" 탭에 들어가지 않는다.
-    if (browseType !== null) {
+    // 허브의 "다운로드" 단추는 받기 관리 탭으로 바로 연다.
+    if (startTab === "downloads") {
+        tabButtons[2].onclick();
+    } else if (browseType !== null) {
         tabButtons[1].onclick();
         browse.setType(browseType);
     } else {
