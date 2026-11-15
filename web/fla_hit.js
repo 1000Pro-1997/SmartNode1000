@@ -16,9 +16,9 @@ let hovered = null;
 let pressed = null;
 let boundCanvas = null;
 
-/** 두 상태가 가리키는 칸이 같은지 본다. */
+/** 두 상태가 가리키는 칸이 같은지 본다. 둘 다 비어 있어도(null) 같다. */
 function same(spot, widget, key) {
-    return spot?.widget === widget && spot.key === key;
+    return spot?.widget === widget && spot?.key === key;
 }
 
 /** 캔버스 좌표를 노드 기준 좌표로 바꿔 위젯을 찾는다.

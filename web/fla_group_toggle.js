@@ -22,48 +22,49 @@ import { app } from "../../scripts/app.js";
 import { t } from "./fla_i18n.js";
 import { mouseGate, dropCaptureFor, guardNodeWidgets, releaseWidgetCaptureSoon } from "./fla_widget_mouse.js";
 import { hitColors, hitText } from "./fla_hit.js";
+import { THEME, RADIUS_XS } from "./fla_theme.js";
 import {
-    ROW_HEIGHT, LAYOUT_PAD, findWidget, drawRoundedRect,
+    ROW_HEIGHT, LAYOUT_PAD, findWidget, drawRoundedRect, drawToggle, toggleWidth,
     fitText, inBounds, notify, pickFromList,
 } from "./fla_lora_ui.js";
-import { makeInputWidget, makeButtonRow, makePanelBox, PANEL_COLORS } from "./fla_panel_ui.js";
+import { makeInputWidget, makeButtonRow, makePanelBox } from "./fla_panel_ui.js";
 
 const NODE_NAME = "SN1000GroupToggle";
 
 // 노드 실행 모드. 프론트엔드의 LGraphEventMode 와 같은 값이다.
 const MODE = { ALWAYS: 0, NEVER: 2, BYPASS: 4 };
 
-// 구역별 색.
+// 구역별 색. 테두리는 쓰지 않는다(Edge 는 모두 null).
 const COLORS = {
-    header: "#2b3b4a",      // 머리글 줄
-    headerEdge: "#3f5a70",
-    on: "#2a3a2c",          // 켜진 항목(그룹이 전부 그 상태)
-    onEdge: "#3f6146",
-    off: "#2a2a2a",         // 꺼진 항목(그룹이 전부 정상)
-    offEdge: "#3a3a3a",
-    mixed: "#4a3d1a",       // 일부만 그 상태
-    mixedEdge: "#b58b2a",
-    action: "#4a3a2a",      // 추가 버튼
-    options: "#3a4a6a",     // 옵션 — 파랑
-    choice: "#3a4a6a",      // 고른 선택지
-    choiceEdge: "#6a8ac0",
-    plain: "#2f343a",       // 고르지 않은 선택지
-    plainEdge: "#444b55",
-    danger: "#5e2f2f",      // 삭제
-    bypass: "#4a2f5e",      // 바이패스 — 보라(프론트엔드가 바이패스 노드를 칠하는 색 계열)
-    bypassEdge: "#8a4fb0",
-    mute: "#4b4b4b",        // 끄기 — 회색
-    muteEdge: "#8c8c8c",
-    single: "#5a3a1a",      // 1개만 선택 배지 — 주황
-    singleEdge: "#b5732a",
-    multi: "#33445a",       // 여러 개 선택 배지 — 파랑
-    multiEdge: "#5a7ab0",
+    header: THEME.row,          // 머리글 줄
+    headerEdge: null,
+    on: THEME.row,              // 켜진 항목(그룹이 전부 그 상태)
+    onEdge: null,
+    off: THEME.rowOff,          // 꺼진 항목(그룹이 전부 정상)
+    offEdge: null,
+    mixed: THEME.warnSoft,      // 일부만 그 상태
+    mixedEdge: null,
+    action: THEME.fill,         // 추가 버튼
+    options: THEME.fill,        // 옵션
+    choice: THEME.brand,        // 고른 선택지
+    choiceEdge: null,
+    plain: THEME.fill,          // 고르지 않은 선택지
+    plainEdge: null,
+    danger: THEME.dangerSoft,   // 삭제
+    bypass: "#3e2a52",          // 바이패스 배지 — 보라(프론트엔드가 바이패스 노드를 칠하는 색 계열)
+    bypassEdge: null,
+    mute: "#3a3d40",            // 끄기 배지 — 회색
+    muteEdge: null,
+    single: THEME.warnSoft,     // 1개만 선택 배지
+    singleInk: THEME.warnInk,
+    multi: THEME.brandSoft,     // 여러 개 선택 배지
+    multiInk: THEME.brandInk,
 };
 
-// 색을 안 정한 토글 그룹 상자. 설정 패널보다 조금 어둡고, 패널이 그 안에 들어간다.
+// 색을 안 정한 토글 그룹 상자. 설정 패널과 같은 카드이고, 윤곽으로 나뉜다.
 const GROUP_BOX = {
-    panel: "#1e2329",
-    panelEdge: "#3f5a70",
+    panel: THEME.card,
+    panelEdge: THEME.rule,
 };
 
 // ─────────── 색 ───────────
@@ -404,39 +405,22 @@ function clickItem(node, idx) {
 
 // ─────────── 그리기 헬퍼 ───────────
 
-/** 세 상태 토글. 켜짐은 오른쪽, 꺼짐은 왼쪽, 섞임은 가운데 노란 손잡이.
+/** 세 상태 off | on 스위치. 섞임이면 표시가 가운데에 주황으로 걸친다.
  *  클릭 범위 [x, width] 를 돌려준다. 기하는 fla_lora_ui 의 drawToggle 과 같다. */
 function drawStateToggle(ctx, posX, posY, height, state) {
-    const radius = height * 0.36;
-    const bgWidth = height * 1.5;
-
+    if (state !== "mixed") return drawToggle(ctx, posX, posY, height, state === "on");
+    const width = toggleWidth(height);
+    const padY = 3;
+    const trackH = height - padY * 2;
+    const half = (width - 4) / 2;
+    drawRoundedRect(ctx, posX, posY + padY, width, trackH, THEME.fill);
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(posX + 4, posY + 4, bgWidth - 8, height - 8, [height * 0.5]);
-    ctx.globalAlpha = 0.25;
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    let knobX;
-    let color;
-    if (state === "on") {
-        knobX = posX + height;
-        color = "#89B";
-    } else if (state === "mixed") {
-        knobX = posX + height * 0.75;
-        color = "#d9b43a";
-    } else {
-        knobX = posX + height * 0.5;
-        color = "#888";
-    }
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(knobX, posY + height * 0.5, radius, 0, Math.PI * 2);
+    ctx.roundRect(posX + 2 + half / 2, posY + padY + 2, half, trackH - 4, [RADIUS_XS - 1]);
+    ctx.fillStyle = THEME.warn;
     ctx.fill();
     ctx.restore();
-
-    return [posX, bgWidth];
+    return [posX, width];
 }
 
 function rowColors(state) {
@@ -514,14 +498,14 @@ function makeHeaderRow(node) {
                 this.bounds[key] = [capX, capW];
                 rightEdge = capX - inner * 2;
             };
-            capsule("allOff", t("gtAllOff"), "#3a3a3a", "#5a5a5a", "#ccc");
-            capsule("allOn", t("gtAllOn"), "#2f4f34", "#4a7a52", "#cec");
+            capsule("allOff", t("gtAllOff"), THEME.fill, null, THEME.label);
+            capsule("allOn", t("gtAllOn"), THEME.brand, null, THEME.onBrand);
             ctx.restore();
 
             ctx.save();
             ctx.textBaseline = "middle";
             ctx.textAlign = "left";
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.inkSoft;
             const text = `${t("gtTitle")}  (${onCount}/${states.length})`;
             const textX = margin + inner * 2;
             ctx.fillText(fitText(ctx, text, Math.max(10, rightEdge - textX)), textX, midY);
@@ -573,7 +557,7 @@ function makeGroupHeader(node, group, idxs) {
             const open = node.flaOpenGroup === group.name;
             const single = group.mode === "single";
             // 색을 정한 상자는 제목도 그 색(읽히게 밝힌 것)으로 쓴다
-            const accent = group.color ? mix(group.color, 255, 0.45) : "#9bd";
+            const accent = group.color ? mix(group.color, 255, 0.45) : THEME.brandInk;
 
             ctx.save();
             ctx.textBaseline = "middle";
@@ -581,7 +565,7 @@ function makeGroupHeader(node, group, idxs) {
             // 오른쪽 끝: 설정 버튼
             const gearW = 16;
             const gearX = width - margin - inner - gearW;
-            ctx.fillStyle = hitText(this, "gear", open ? "#fff" : "#999");
+            ctx.fillStyle = hitText(this, "gear", open ? THEME.brandInk : THEME.faint);
             ctx.textAlign = "center";
             ctx.fillText("⚙", gearX + gearW / 2, midY);
             this.bounds.gear = [gearX, gearW];
@@ -592,10 +576,8 @@ function makeGroupHeader(node, group, idxs) {
             const badgeW = ctx.measureText(label).width + 10;
             const badgeX = gearX - inner * 2 - badgeW;
             drawRoundedRect(ctx, badgeX, posY + 4, badgeW, height - 8,
-                ...hitColors(this, "mode",
-                    single ? COLORS.single : COLORS.multi,
-                    single ? COLORS.singleEdge : COLORS.multiEdge));
-            ctx.fillStyle = "#eee";
+                ...hitColors(this, "mode", single ? COLORS.single : COLORS.multi, null));
+            ctx.fillStyle = single ? COLORS.singleInk : COLORS.multiInk;
             ctx.fillText(label, badgeX + badgeW / 2, midY);
             this.bounds.mode = [badgeX, badgeW];
 
@@ -654,10 +636,10 @@ function pushGroupPanel(node, group) {
     // 모드: 1개만 선택 / 여러 개 선택
     const single = group.mode === "single";
     const mode = makeButtonRow(node, "fla_gt_group_mode", [
-        [t("gtSingle"), single ? COLORS.single : COLORS.plain,
-            () => setGroupMode(node, group, "single"), single ? COLORS.singleEdge : COLORS.plainEdge],
-        [t("gtMulti"), !single ? COLORS.multi : COLORS.plain,
-            () => setGroupMode(node, group, "multi"), !single ? COLORS.multiEdge : COLORS.plainEdge],
+        [t("gtSingle"), single ? COLORS.choice : COLORS.plain,
+            () => setGroupMode(node, group, "single"), null],
+        [t("gtMulti"), !single ? COLORS.choice : COLORS.plain,
+            () => setGroupMode(node, group, "multi"), null],
     ]);
     node.widgets.push(mode);
     panel.push(mode);
@@ -798,7 +780,7 @@ function makeItemRow(node, item, idx) {
 
             drawRoundedRect(
                 ctx, margin, posY, width - margin * 2, height,
-                ...hitColors(this, "title", fill, open ? PANEL_COLORS.panelEdge : edge, live),
+                ...hitColors(this, "title", open ? THEME.brandSoft : fill, edge, live),
             );
 
             let posX = margin;
@@ -812,7 +794,7 @@ function makeItemRow(node, item, idx) {
             // 오른쪽 끝: 설정 버튼
             const gearW = 16;
             const gearX = width - margin - inner - gearW;
-            ctx.fillStyle = hitText(this, "gear", open ? "#9bd" : "#999");
+            ctx.fillStyle = hitText(this, "gear", open ? THEME.brandInk : THEME.faint);
             ctx.textAlign = "center";
             ctx.fillText("⚙", gearX + gearW / 2, midY);
             this.bounds.gear = [gearX, gearW];
@@ -830,7 +812,7 @@ function makeItemRow(node, item, idx) {
                 ? [COLORS.mute, COLORS.muteEdge]
                 : [COLORS.bypass, COLORS.bypassEdge];
             drawRoundedRect(ctx, actX, posY + 4, actW, height - 8, af, ae);
-            ctx.fillStyle = "#ddd";
+            ctx.fillStyle = THEME.inkSoft;
             ctx.textAlign = "center";
             ctx.fillText(actLabel, actX + actW / 2, midY);
 
@@ -838,7 +820,7 @@ function makeItemRow(node, item, idx) {
             const countText = `G${st.groups.length}`;
             const countW = ctx.measureText(countText).width;
             countX = actX - inner * 2 - countW;
-            ctx.fillStyle = st.groups.length ? "#8ab" : "#c66";
+            ctx.fillStyle = st.groups.length ? THEME.faint : THEME.danger;
             ctx.textAlign = "left";
             ctx.fillText(countText, countX, midY);
             ctx.restore();
@@ -849,7 +831,7 @@ function makeItemRow(node, item, idx) {
                 ctx.arc(posX + 5, midY, 4.5, 0, Math.PI * 2);
                 ctx.fillStyle = item.color;
                 ctx.fill();
-                ctx.strokeStyle = "#111";
+                ctx.strokeStyle = THEME.card;
                 ctx.lineWidth = 1;
                 ctx.stroke();
                 posX += 14;
@@ -860,7 +842,7 @@ function makeItemRow(node, item, idx) {
             const titleLeft = posX;
             const titleW = Math.max(10, countX - inner * 2 - titleLeft);
             if (!open) {
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                ctx.fillStyle = THEME.inkSoft;
                 ctx.textAlign = "left";
                 ctx.fillText(fitText(ctx, itemLabel(item), titleW), titleLeft, midY);
             }
@@ -927,7 +909,7 @@ function makeLabelRow(node, name, label) {
             const margin = 18;
             const width = node.size?.[0] ?? widgetWidth;
             ctx.save();
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.label;
             ctx.textAlign = "left";
             ctx.textBaseline = "middle";
             ctx.fillText(label, margin, posY + height * 0.5);
@@ -1010,7 +992,7 @@ function makeSwatchRow(node, name, opts) {
             let x = margin;
             cells.forEach((c, i) => {
                 const chosen = current === c.hex;
-                const [fill, edge] = hitColors(this, i, c.hex || "#2a2a2a", chosen ? "#ffffff" : "#111111");
+                const [fill, edge] = hitColors(this, i, c.hex || THEME.fill, chosen ? THEME.ink : THEME.card);
                 ctx.save();
                 ctx.beginPath();
                 ctx.roundRect(x, top, each, each, 3);
@@ -1024,7 +1006,7 @@ function makeSwatchRow(node, name, opts) {
                     ctx.beginPath();
                     ctx.moveTo(x + 3, top + each - 3);
                     ctx.lineTo(x + each - 3, top + 3);
-                    ctx.strokeStyle = "#888";
+                    ctx.strokeStyle = THEME.faint;
                     ctx.lineWidth = 1.5;
                     ctx.stroke();
                 }
@@ -1103,9 +1085,9 @@ function pushPanel(node, item, idx, row) {
     const byName = item.by !== "color";
     const by = makeButtonRow(node, "fla_gt_by", [
         [t("gtByName"), byName ? COLORS.choice : COLORS.plain,
-            () => setBy(node, item, "name"), byName ? COLORS.choiceEdge : COLORS.plainEdge],
+            () => setBy(node, item, "name"), null],
         [t("gtByColor"), !byName ? COLORS.choice : COLORS.plain,
-            () => setBy(node, item, "color"), !byName ? COLORS.choiceEdge : COLORS.plainEdge],
+            () => setBy(node, item, "color"), null],
     ]);
     node.widgets.push(by);
     panel.push(by);
@@ -1127,9 +1109,9 @@ function pushPanel(node, item, idx, row) {
         const exact = item.match !== "contains";
         const match = makeButtonRow(node, "fla_gt_match", [
             [t("gtMatchExact"), exact ? COLORS.choice : COLORS.plain,
-                () => setMatch(node, item, "exact"), exact ? COLORS.choiceEdge : COLORS.plainEdge],
+                () => setMatch(node, item, "exact"), null],
             [t("gtMatchContains"), !exact ? COLORS.choice : COLORS.plain,
-                () => setMatch(node, item, "contains"), !exact ? COLORS.choiceEdge : COLORS.plainEdge],
+                () => setMatch(node, item, "contains"), null],
             ["📋 " + t("gtPick"), COLORS.action, (event) => pickFromCanvas(node, item, event), null],
         ]);
         node.widgets.push(match);
@@ -1152,10 +1134,10 @@ function pushPanel(node, item, idx, row) {
     // 어떻게 할지: 바이패스 / 끄기
     const mute = item.action === "mute";
     const action = makeButtonRow(node, "fla_gt_action", [
-        [t("gtBypass"), !mute ? COLORS.bypass : COLORS.plain,
-            () => setAction(node, item, "bypass"), !mute ? COLORS.bypassEdge : COLORS.plainEdge],
-        [t("gtMute"), mute ? COLORS.mute : COLORS.plain,
-            () => setAction(node, item, "mute"), mute ? COLORS.muteEdge : COLORS.plainEdge],
+        [t("gtBypass"), !mute ? COLORS.choice : COLORS.plain,
+            () => setAction(node, item, "bypass"), null],
+        [t("gtMute"), mute ? COLORS.choice : COLORS.plain,
+            () => setAction(node, item, "mute"), null],
     ]);
     node.widgets.push(action);
     panel.push(action);
@@ -1164,7 +1146,7 @@ function pushPanel(node, item, idx, row) {
     const group = groupOf(node, item);
     const pick = makeButtonRow(node, "fla_gt_group", [
         [`${t("group")}: ${groupLabel(group)}  ▾`, COLORS.plain,
-            (event) => pickGroupFor(node, item, event), COLORS.plainEdge],
+            (event) => pickGroupFor(node, item, event), null],
     ]);
     node.widgets.push(pick);
     panel.push(pick);

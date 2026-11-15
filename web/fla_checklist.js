@@ -3,6 +3,7 @@ import { ComfyWidgets } from "../../scripts/widgets.js";
 import { t } from "./fla_i18n.js";
 import { mouseGate, dropCaptureFor, guardNodeWidgets } from "./fla_widget_mouse.js";
 import { hitColors, hitText } from "./fla_hit.js";
+import { THEME } from "./fla_theme.js";
 import { attachWildcardAutocomplete } from "./fla_wildcard_autocomplete.js";
 // 로라 목록 UI 는 FLALoraTheme 과 공용이다. 고치려면 fla_lora_ui.js 를 본다.
 import {
@@ -23,12 +24,9 @@ const NODE_NAME = "SN1000Checklist";
 
 // 구역별 색.
 const COLORS = {
-    header: "#2d4a5e",    // 머리글 줄
-    action: "#4a3a2a",    // 추가 버튼
-    panel: "#242a30",     // 설정 패널 바탕
-    panelEdge: "#3f5a70", // 설정 패널 테두리
-    danger: "#5e2f2f",    // 삭제
-    options: "#3a4a6a",   // 옵션 — 파랑
+    action: THEME.fill,         // 추가 버튼
+    danger: THEME.dangerSoft,   // 삭제
+    options: THEME.fill,        // 옵션
 };
 
 /** 항목 제목이 비었을 때 프롬프트 앞부분으로 대신 보여준다. */
@@ -112,11 +110,11 @@ function makeItemRow(node, item, idx) {
             const open = node.flaOpen === idx;
             const live = item.enabled && !off;
 
+            // 펼친 항목은 청록 바탕으로 어느 것이 열렸는지 보여준다
             drawRoundedRect(
                 ctx, margin, posY, width - margin * 2, height,
                 ...hitColors(this, "title",
-                    live ? "#2a3a2c" : "#2a2a2a",
-                    open ? COLORS.panelEdge : (live ? "#3f6146" : "#3a3a3a"), !off),
+                    open ? THEME.brandSoft : (live ? THEME.row : THEME.rowOff), null, !off),
             );
 
             let posX = margin;
@@ -130,7 +128,7 @@ function makeItemRow(node, item, idx) {
             // 오른쪽 끝: 설정 버튼
             const gearW = 16;
             const gearX = width - margin - inner - gearW;
-            ctx.fillStyle = hitText(this, "gear", open ? "#9bd" : "#999", !off);
+            ctx.fillStyle = hitText(this, "gear", open ? THEME.brandInk : THEME.faint, !off);
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("⚙", gearX + gearW / 2, midY);
@@ -141,7 +139,7 @@ function makeItemRow(node, item, idx) {
             const titleLeft = posX;
             const titleW = Math.max(10, gearX - inner * 2 - titleLeft);
             if (!open) {
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                ctx.fillStyle = THEME.inkSoft;
                 ctx.textAlign = "left";
                 ctx.fillText(fitText(ctx, itemLabel(item), titleW), titleLeft, midY);
             }
@@ -163,12 +161,12 @@ function makeItemRow(node, item, idx) {
                 let right = gearX - inner * 2;
                 if (off) {
                     const text = `L${off}`;
-                    ctx.fillStyle = "#777";      // 회색 — 꺼진 로라
+                    ctx.fillStyle = THEME.dim;       // 꺼진 로라
                     ctx.fillText(text, right, midY);
                     right -= ctx.measureText(text).width + 4;
                 }
                 if (on) {
-                    ctx.fillStyle = "#d9b43a";   // 노랑 — 켜진 로라
+                    ctx.fillStyle = THEME.brandInk;  // 켜진 로라
                     ctx.fillText(`L${on}`, right, midY);
                 }
                 ctx.restore();
@@ -340,9 +338,7 @@ function makeHeaderRow(node) {
             const onCount = items.filter((i) => i.enabled).length;
 
             drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                ...hitColors(this, "toggle",
-                    on ? "#2b3b4a" : "#2a2a2a",
-                    on ? "#3f5a70" : "#3a3a3a"));
+                ...hitColors(this, "toggle", on ? THEME.row : THEME.rowOff, null));
 
             let posX = margin;
             this.bounds.toggle = drawToggle(ctx, posX, posY, height, on);
@@ -362,10 +358,8 @@ function makeHeaderRow(node) {
                 const boxW = labelW + 8;
                 const boxX = rightEdge - boxW;
                 drawRoundedRect(ctx, boxX, posY + 4, boxW, height - 8,
-                    ...hitColors(this, "lora",
-                        lorasOn ? "#2f4f34" : "#3a3a3a",
-                        lorasOn ? "#4a7a52" : "#4a4a4a", on));
-                ctx.fillStyle = lorasOn ? "#cec" : "#888";
+                    ...hitColors(this, "lora", lorasOn ? THEME.brand : THEME.fill, null, on));
+                ctx.fillStyle = lorasOn ? THEME.onBrand : THEME.label;
                 ctx.textAlign = "center";
                 ctx.fillText(label, boxX + boxW / 2, midY);
                 this.bounds.lora = [boxX, boxW];
@@ -375,7 +369,7 @@ function makeHeaderRow(node) {
             }
 
             ctx.font = "";
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.inkSoft;
             ctx.textAlign = "left";
             const text = `${t("checklist")}  (${onCount}/${items.length})`;
             ctx.fillText(fitText(ctx, text, Math.max(10, rightEdge - posX)), posX, midY);
@@ -572,7 +566,7 @@ function rebuild(node) {
     // 맨 아래: 항목 추가 + 옵션.
     // 옵션은 자주 쓰지 않으므로 좁게 두고 추가 버튼에 자리를 더 준다.
     const add = makeButtonRow(node, "fla_add", [
-        ["＋ " + t("addItem"), off ? "#2a2a2a" : COLORS.action, () => {
+        ["＋ " + t("addItem"), off ? THEME.rowOff : COLORS.action, () => {
             node.flaItems.push(newItem());
             // 새 항목은 바로 편집할 수 있도록 펼쳐준다
             node.flaOpen = node.flaItems.length - 1;

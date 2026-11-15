@@ -10,12 +10,37 @@ import { app } from "../../scripts/app.js";
 import { mouseGate } from "./fla_widget_mouse.js";
 import { hitColors } from "./fla_hit.js";
 import { ROW_HEIGHT, LAYOUT_PAD, drawRoundedRect, fitText, inBounds } from "./fla_lora_ui.js";
+import { THEME, RADIUS_CARD } from "./fla_theme.js";
 
-// 설정 패널 바탕·테두리 기본색. 체크리스트가 쓰던 값이다.
+// 설정 패널: 거의 검은 카드에 가는 윤곽.
 export const PANEL_COLORS = {
-    panel: "#242a30",
-    panelEdge: "#3f5a70",
+    panel: THEME.card,
+    panelEdge: THEME.rule,
 };
+
+// 지금 화면에 붙어 있는 입력칸들. 프레임이 끝날 때 이번에 안 그려진 것을 감춘다.
+// 패널을 다시 짤 때 요소만 떼어 내는 곳이 있어, 떨어진 것은 그때 걸러 낸다.
+const liveInputs = new Set();
+let frameHooked = false;
+
+/** 노드가 화면 밖으로 나가면 캔버스는 그 노드를 아예 그리지 않는다(draw 가
+ *  안 불린다). 그러면 입력칸은 마지막 자리에 남아 화면 위에 떠 버린다.
+ *  그래서 캔버스 한 프레임이 끝날 때마다, 이번 프레임에 그려지지 않은
+ *  입력칸을 감춘다. */
+function hookFrameEnd() {
+    const canvas = app.canvas;
+    if (frameHooked || !canvas) return;
+    frameHooked = true;
+    const previous = canvas.onDrawForeground;
+    canvas.onDrawForeground = function (...args) {
+        const result = previous?.apply(this, args);
+        for (const input of liveInputs) {
+            if (!input.isConnected) liveInputs.delete(input);
+            else if (input.flaFrame !== this.frame) input.style.visibility = "hidden";
+        }
+        return result;
+    };
+}
 
 /** 캔버스 위에 얹는 DOM 입력 칸.
  *
@@ -70,10 +95,10 @@ export function makeInputWidget(node, opts) {
         // 여러 줄 칸은 글자가 위에서부터 채워지게 한다
         verticalAlign: "top",
         lineHeight: "1.35",
-        background: "#222",
-        color: "#DDD",
-        border: "1px solid #3f5a70",
-        borderRadius: "4px",
+        background: THEME.fill,
+        color: THEME.ink,
+        border: "1px solid transparent",
+        borderRadius: "6px",
         padding: "2px 6px",
         fontFamily: "inherit",
         // 테마의 전환 효과가 남아 있으면 크기·위치가 스르륵 따라와 잔상이 생긴다
@@ -81,6 +106,8 @@ export function makeInputWidget(node, opts) {
         animation: "none",
     });
     document.body.append(input);
+    liveInputs.add(input);
+    hookFrameEnd();
 
     input.addEventListener("input", () => {
         opts.set(input.value);
@@ -188,10 +215,12 @@ export function makeInputWidget(node, opts) {
             }
 
             // 좌표가 확정된 뒤에야 보여준다
+            input.flaFrame = canvas.frame;
             input.style.visibility = "visible";
         },
 
         onRemove() {
+            liveInputs.delete(input);
             input.remove();
         },
     };
@@ -233,7 +262,9 @@ export function makeButtonRow(node, name, buttons) {
                 drawRoundedRect(ctx, x, posY, each, height,
                     ...hitColors(this, i, fill, edge));
                 this.bounds.push([x, each]);
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                // 바탕에 맞는 글자색: 주 버튼(청록)은 어둡게, 위험(삭제)은 붉게
+                ctx.fillStyle = fill === THEME.brand ? THEME.onBrand
+                    : fill === THEME.dangerSoft ? THEME.dangerInk : THEME.inkSoft;
                 ctx.fillText(fitText(ctx, btn[0], each - 8), x + each / 2, midY);
                 x += each + gap;
             });
@@ -286,7 +317,7 @@ export function makePanelBox(node, first, last, colors = PANEL_COLORS, inset = 6
             if (bottom <= top) return;
             ctx.save();
             ctx.beginPath();
-            ctx.roundRect(inset, top, Math.max(20, width - inset * 2), bottom - top, 6);
+            ctx.roundRect(inset, top, Math.max(20, width - inset * 2), bottom - top, RADIUS_CARD);
             ctx.fillStyle = colors.panel;
             ctx.fill();
             ctx.strokeStyle = colors.panelEdge;

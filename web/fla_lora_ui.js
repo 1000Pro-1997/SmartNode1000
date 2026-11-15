@@ -12,6 +12,7 @@ import { pickLora, makeLoraCardPreview } from "./fla_lora_picker.js";
 import { pickWildcard, wildcardToken } from "./fla_wildcard_picker.js";
 import { mouseGate, releaseWidgetCaptureSoon, guardMouse } from "./fla_widget_mouse.js";
 import { markHit, hitColors } from "./fla_hit.js";
+import { THEME, RADIUS_CONTROL, RADIUS_XS } from "./fla_theme.js";
 
 export const ROW_HEIGHT = 22;
 const BOX_PAD_Y = 4;
@@ -55,7 +56,7 @@ function addLoraHoverStyles() {
     const style = document.createElement("style");
     style.id = "fla-lora-hover-style";
     style.textContent = `
-      .fla-lora-hover{position:fixed;z-index:100000;width:220px;overflow:hidden;border:1px solid #56606d;border-radius:9px;box-shadow:0 10px 30px #000c;pointer-events:auto}
+      .fla-lora-hover{position:fixed;z-index:100000;width:220px;overflow:hidden;border:1px solid ${THEME.rule};border-radius:10px;box-shadow:0 10px 30px #000c;pointer-events:auto}
     `;
     document.head.appendChild(style);
 }
@@ -163,15 +164,15 @@ export const NUM_W = 32;
 export const INNER = 3;
 export const NUM_TOTAL = ARROW_W + INNER + NUM_W + INNER + ARROW_W;
 
-// 로라 행 색
+// 로라 행 색. 테두리 없이 바탕만 칠하고, 켜짐은 스위치의 청록이 말해준다.
 export const ROW_COLORS = {
-    on: "#2a3a2c",       // 켜진 로라 바탕
-    onEdge: "#3f6146",   // 켜진 로라 테두리
-    off: "#2a2a2a",      // 꺼진 로라 바탕
-    offEdge: "#3a3a3a",  // 꺼진 로라 테두리
-    del: "#a66",         // 삭제 ✕ (구버전 호환)
-    delBg: "#7a2f2f",    // 삭제 버튼 바탕
-    delEdge: "#a04a4a",  // 삭제 버튼 테두리
+    on: THEME.row,            // 켜진 로라 바탕
+    onEdge: null,
+    off: THEME.rowOff,        // 꺼진 로라 바탕
+    offEdge: null,
+    del: THEME.dangerInk,     // 삭제 ✕
+    delBg: THEME.dangerSoft,  // 삭제 버튼 바탕
+    delEdge: null,
 };
 
 /** 그릴 때 쓸 줄 높이.
@@ -428,7 +429,7 @@ export async function relinkLoras(loras) {
 export function drawRoundedRect(ctx, x, y, w, h, fill, stroke) {
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x, y, Math.max(2, w), h, [h * 0.25]);
+    ctx.roundRect(x, y, Math.max(2, w), h, [Math.min(RADIUS_CONTROL, h / 2)]);
     ctx.fillStyle = fill;
     ctx.fill();
     if (stroke) {
@@ -439,28 +440,38 @@ export function drawRoundedRect(ctx, x, y, w, h, fill, stroke) {
     ctx.restore();
 }
 
-/** 토글 스위치. 클릭 범위 [x, width] 를 돌려준다.
+/** off | on 스위치의 폭. 오른쪽 끝에 붙일 때 미리 자리를 잡는 데 쓴다. */
+export function toggleWidth(height) {
+    return Math.round(height * 2);
+}
+
+/** off | on 스위치. 클릭 범위 [x, width] 를 돌려준다.
+ *  회색 바탕에 표시 하나가 고른 쪽에 놓인다 — 켜지면 청록, 꺼지면 회색.
  *  live 가 false 면 켜져 있어도 회색으로 그린다(바이패스 표시). */
 export function drawToggle(ctx, posX, posY, height, value, live = true) {
-    const radius = height * 0.36;
-    const bgWidth = height * 1.5;
+    const width = toggleWidth(height);
+    const padY = 3;
+    const trackH = height - padY * 2;
+    const half = (width - 4) / 2;
 
     ctx.save();
+    drawRoundedRect(ctx, posX, posY + padY, width, trackH, THEME.fill);
     ctx.beginPath();
-    ctx.roundRect(posX + 4, posY + 4, bgWidth - 8, height - 8, [height * 0.5]);
-    ctx.globalAlpha = 0.25;
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.roundRect(posX + 2 + (value ? half : 0), posY + padY + 2, half, trackH - 4, [RADIUS_XS - 1]);
+    ctx.fillStyle = value ? (live ? THEME.brand : THEME.switchOff) : THEME.switchOff;
     ctx.fill();
-    ctx.globalAlpha = 1;
 
-    ctx.fillStyle = (value && live) ? "#89B" : "#888";
-    const knobX = value ? posX + height : posX + height * 0.5;
-    ctx.beginPath();
-    ctx.arc(knobX, posY + height * 0.5, radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.font = `600 ${Math.max(8, Math.round(trackH * 0.56))}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const midY = posY + height / 2 + 0.5;
+    ctx.fillStyle = value ? THEME.label : THEME.ink;
+    ctx.fillText("off", posX + 2 + half / 2, midY);
+    ctx.fillStyle = value ? (live ? THEME.onBrand : THEME.ink) : THEME.label;
+    ctx.fillText("on", posX + 2 + half * 1.5, midY);
     ctx.restore();
 
-    return [posX, bgWidth];
+    return [posX, width];
 }
 
 /** ◀ 값 ▶ 묶음을 rightX 기준 오른쪽 정렬로 그린다.
@@ -470,7 +481,7 @@ export function drawNumber(ctx, rightX, posY, height, value) {
     let posX = rightX - NUM_TOTAL;
 
     ctx.save();
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+    ctx.fillStyle = THEME.label;
 
     // ◀
     ctx.fill(new Path2D(
@@ -482,7 +493,9 @@ export function drawNumber(ctx, rightX, posY, height, value) {
     // 숫자
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.fillStyle = THEME.ink;
     ctx.fillText(Number(value).toFixed(2), posX + NUM_W / 2, midY);
+    ctx.fillStyle = THEME.label;
     const num = [posX, NUM_W];
     posX += NUM_W + INNER;
 
@@ -593,7 +606,7 @@ export function makeLoraRow(node, lora, idx, opts = {}) {
             const delX = width - margin - inner - delW;
             drawRoundedRect(ctx, delX, posY + 4, delW, delW,
                 ...hitColors(this, "del", ROW_COLORS.delBg, ROW_COLORS.delEdge, !off));
-            ctx.fillStyle = "#fff";
+            ctx.fillStyle = ROW_COLORS.del;
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.font = "11px Arial";
@@ -611,7 +624,7 @@ export function makeLoraRow(node, lora, idx, opts = {}) {
             // 가운데: 이름 (남는 폭을 전부 쓴다)
             const nameLeft = posX;
             const nameW = Math.max(10, dec[0] - inner * 2 - nameLeft);
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.inkSoft;
             ctx.textAlign = "left";
             ctx.fillText(fitText(ctx, prettyLora(lora.path), nameW), nameLeft, midY);
             this.bounds.name = [nameLeft, nameW];
@@ -712,22 +725,13 @@ export function handleLoraRowClick(node, lora, widget, pos, opts = {}) {
 
 // 로라 영역 색
 export const BOX_COLORS = {
-    header: "#2d4a5e",   // "로라 적용" 토글 줄
-    action: "#4a3a2a",   // "＋ 로라 추가" 버튼
-    wildcard: "#2a3a4a", // "＋ 와일드카드 추가" 버튼
-    edgeOn: "#3f6146",   // 켜졌을 때 테두리
-    edgeOff: "#4a4a4a",  // 꺼졌을 때 테두리
-    grey: "#2a2a2a",     // 꺼졌을 때 바탕
+    header: THEME.card,       // "로라 적용" 토글 줄
+    action: THEME.fill,       // "＋ 로라 추가" 버튼
+    wildcard: THEME.fill,     // "＋ 와일드카드 추가" 버튼
+    edgeOn: THEME.rule,       // 켜졌을 때 윤곽
+    edgeOff: THEME.rule,      // 꺼졌을 때 윤곽
+    grey: THEME.rowOff,       // 꺼졌을 때 바탕
 };
-
-/** 위젯 배경색을 고정한다. addWidget 이 만든 위젯에 쓴다. */
-export function paint(widget, color) {
-    Object.defineProperty(widget, "background_color", {
-        get: () => color,
-        configurable: true,
-    });
-    return widget;
-}
 
 /** "로라 적용" 토글 ~ "＋ 로라 추가" 까지를 테두리 하나로 묶은 영역을 만든다.
  *
@@ -810,7 +814,7 @@ export function buildLoraBox(node, opts = {}) {
 
                 // ▶ (맨 오른쪽)
                 const incX = rightEdge - arrowW;
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                ctx.fillStyle = THEME.label;
                 ctx.fill(new Path2D(
                     `M ${incX} ${midY - ARROW_H / 2} l ${arrowW} ${ARROW_H / 2} l -${arrowW} ${ARROW_H / 2} v -${ARROW_H} z`
                 ));
@@ -819,15 +823,15 @@ export function buildLoraBox(node, opts = {}) {
                 // 캡슐 (가운데)
                 const capX = incX - INNER - capW;
                 drawRoundedRect(ctx, capX, posY + 4, capW, height - 8,
-                    ...hitColors(this, "all", "#333a45", "#4a5568", on));
-                ctx.fillStyle = "#bcd";
+                    ...hitColors(this, "all", THEME.fill, null, on));
+                ctx.fillStyle = THEME.label;
                 ctx.textAlign = "center";
                 ctx.fillText(capLabel, capX + capW / 2, midY);
                 this.bounds.all = [capX, capW];
 
                 // ◀ (왼쪽)
                 const decX = capX - INNER - arrowW;
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                ctx.fillStyle = THEME.label;
                 ctx.fill(new Path2D(
                     `M ${decX} ${midY} l ${arrowW} ${ARROW_H / 2} l 0 -${ARROW_H} L ${decX} ${midY} z`
                 ));
@@ -840,7 +844,7 @@ export function buildLoraBox(node, opts = {}) {
 
             // 왼쪽: 제목
             ctx.font = "";
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.inkSoft;
             ctx.textAlign = "left";
             const label = t("applyLora") + `  (${onCount}/${list.length})`;
             ctx.fillText(fitText(ctx, label, Math.max(10, rightEdge - posX)), posX, midY);
@@ -946,12 +950,11 @@ export function buildLoraBox(node, opts = {}) {
             drawRoundedRect(
                 ctx, margin, posY, width - margin * 2, height,
                 ...hitColors(this, "all",
-                    on ? BOX_COLORS.action : BOX_COLORS.grey,
-                    on ? "#6b5333" : "#3a3a3a", on),
+                    on ? BOX_COLORS.action : BOX_COLORS.grey, null, on),
             );
             ctx.save();
             if (!on) ctx.globalAlpha = 0.45;
-            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+            ctx.fillStyle = THEME.brandInk;
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText(t("addLora"), width * 0.5, posY + height * 0.5);
@@ -998,12 +1001,11 @@ export function buildLoraBox(node, opts = {}) {
                 drawRoundedRect(
                     ctx, margin, posY, width - margin * 2, height,
                     ...hitColors(this, "all",
-                        live ? BOX_COLORS.wildcard : BOX_COLORS.grey,
-                        live ? "#33556b" : "#3a3a3a", live),
+                        live ? BOX_COLORS.wildcard : BOX_COLORS.grey, null, live),
                 );
                 ctx.save();
                 if (!live) ctx.globalAlpha = 0.45;
-                ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                ctx.fillStyle = THEME.inkSoft;
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
                 ctx.fillText(t("addWildcard"), width * 0.5, posY + height * 0.5);
@@ -1126,9 +1128,9 @@ export function inlineEditNumber(node, bounds, rowY, value, onDone) {
         height: `${ROW_HEIGHT * scale}px`,
         fontSize: `${12 * scale}px`,
         textAlign: "center",
-        background: "#222",
-        color: "#DDD",
-        border: "1px solid #89B",
+        background: THEME.card,
+        color: THEME.ink,
+        border: `1px solid ${THEME.brand}`,
         borderRadius: "4px",
         zIndex: 10000,
         outline: "none",

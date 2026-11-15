@@ -2,12 +2,13 @@ import { app } from "../../scripts/app.js";
 import { t } from "./fla_i18n.js";
 import { mouseGate, releaseWidgetCaptureSoon, dropCaptureFor, guardNodeWidgets } from "./fla_widget_mouse.js";
 import { hitColors } from "./fla_hit.js";
+import { THEME } from "./fla_theme.js";
 import { attachWildcardAutocomplete } from "./fla_wildcard_autocomplete.js";
 // 로라 목록 UI 는 FLAChecklist 와 공용이다. 고치려면 fla_lora_ui.js 를 본다.
 import {
     ROW_HEIGHT, LAYOUT_PAD, api, findWidget, notify, pickFromList, drawRoundedRect,
     drawToggle, fitText, inBounds, isNodeOff,
-    buildLoraBox, paint, insertAfter, openPresetFolder, relinkLoras,
+    buildLoraBox, insertAfter, openPresetFolder, relinkLoras,
 } from "./fla_lora_ui.js";
 
 const NODE_NAME = "SN1000LoraTheme";
@@ -119,34 +120,11 @@ function splitPath(input) {
     return { theme: parts[0], name: parts.slice(1).join(" ") };
 }
 
-// 구역별 색. 로라 영역을 시각적으로 묶어준다.
-const COLORS = {
-    header: "#2d4a5e",   // 구분선 머리글
-    on: "#2f4f34",       // 켜진 로라
-    off: "#3a3a3a",      // 꺼진 로라
-    strength: "#333a45", // 강도 줄
-    action: "#4a3a2a",   // 추가 버튼
-};
-
-// 버튼 색. 성격이 같은 것끼리 묶어서 구분한다.
-const BTN = {
-    save: "#2f4f34",     // 저장 — 초록
-    new: "#8a4b2a",      // 새로만들기 — 주황
-    rename: "#3a4a6a",   // 이름 변경 — 파랑
-    delete: "#5e2f2f",   // 삭제 — 빨강
-    theme: "#4a3a5e",    // 테마 관련 — 보라
-};
-
 // ─────────── 캔버스 그리기 헬퍼 (rgthree 파워 로라 로더 방식) ───────────
 
 
 // 로라 한 줄의 높이와 노드 최소 폭. 줄 높이를 고정해 크기가 튀지 않게 한다.
 const MIN_NODE_WIDTH = 340;
-
-/** 노드가 꺼져 있으면 회색을, 아니면 원래 색을 돌려준다. */
-function tone(node, color, grey = "#2a2a2a") {
-    return isNodeOff(node) ? grey : color;
-}
 
 /** 포인터 콜백이 끝난 뒤 화면 위젯을 교체한다.
  *
@@ -360,9 +338,7 @@ app.registerExtension({
 
                     drawRoundedRect(
                         ctx, margin, posY, width - margin * 2, height,
-                        ...hitColors(this, "name",
-                            on ? "#2b3b4a" : "#2a2a2a",
-                            on ? "#3f5a70" : "#3a3a3a"),
+                        ...hitColors(this, "name", on ? THEME.row : THEME.rowOff, null),
                     );
 
                     let posX = margin;
@@ -371,7 +347,7 @@ app.registerExtension({
 
                     ctx.save();
                     if (!on) ctx.globalAlpha = 0.45;
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.ink;
                     ctx.textAlign = "left";
                     ctx.textBaseline = "middle";
                     const label = presetW.value ?? NONE;
@@ -463,12 +439,6 @@ app.registerExtension({
             themeW.callback = function (v) {
                 origTheme?.apply(this, arguments);
                 refreshPresets(v);
-            };
-
-            const btn = (label, color, fn) => {
-                const w = node.addWidget("button", label, null, fn);
-                paint(w, color);
-                return w;
             };
 
             const actSave = async () => {
@@ -674,35 +644,33 @@ app.registerExtension({
                     ctx.textBaseline = "middle";
                     ctx.textAlign = "center";
 
+                    // 바뀐 것이 있을 때만 저장(청록)·되돌리기(주황)가 살아난다
+                    const idle = off ? THEME.rowOff : THEME.fill;
+
                     // 왼쪽: 저장
                     const sx = margin;
+                    const saveOn = !off && dirty;
                     drawRoundedRect(ctx, sx, posY, third, height,
-                        ...hitColors(this, "save",
-                            off ? "#2a2a2a" : (dirty ? BTN.save : "#2f2f2f"),
-                            off ? "#3a3a3a" : (dirty ? "#4a7a52" : "#3a3a3a"), !off));
+                        ...hitColors(this, "save", saveOn ? THEME.brand : idle, null, !off));
                     this.bounds.save = [sx, third];
                     // 디스크 모양은 항상 보여준다. 변경 여부는 버튼 색으로 알 수 있다.
-                    ctx.fillStyle = off || !dirty ? "#666" : (LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD");
+                    ctx.fillStyle = saveOn ? THEME.onBrand : THEME.dim;
                     ctx.fillText("💾 " + t("save"), sx + third / 2, midY);
 
                     // 가운데: 최근 저장 상태로 되돌리기
                     const rx = sx + third + gap;
                     drawRoundedRect(ctx, rx, posY, third, height,
-                        ...hitColors(this, "revert",
-                            off ? "#2a2a2a" : (dirty ? BTN.new : "#2f2f2f"),
-                            off ? "#3a3a3a" : (dirty ? "#7a5a3a" : "#3a3a3a"), !off));
+                        ...hitColors(this, "revert", saveOn ? THEME.warnSoft : idle, null, !off));
                     this.bounds.revert = [rx, third];
-                    ctx.fillStyle = off || !dirty ? "#666" : (LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD");
+                    ctx.fillStyle = saveOn ? THEME.warnInk : THEME.dim;
                     ctx.fillText("↶ " + t("revert"), rx + third / 2, midY);
 
                     // 오른쪽: 옵션
                     const ox = rx + third + gap;
                     drawRoundedRect(ctx, ox, posY, third, height,
-                        ...hitColors(this, "opts",
-                            off ? "#2a2a2a" : BTN.rename,
-                            off ? "#3a3a3a" : "#4a5a7a", !off));
+                        ...hitColors(this, "opts", idle, null, !off));
                     this.bounds.opts = [ox, third];
-                    ctx.fillStyle = off ? "#666" : (LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD");
+                    ctx.fillStyle = off ? THEME.dim : THEME.inkSoft;
                     ctx.fillText("⚙ " + t("options"), ox + third / 2, midY);
 
                     ctx.restore();

@@ -2,6 +2,8 @@ import { app } from "../../scripts/app.js";
 import { t } from "./fla_i18n.js";
 import { mouseGate, releaseWidgetCapture, releaseWidgetCaptureSoon, guardNodeWidgets } from "./fla_widget_mouse.js";
 import { hitColors, hitText } from "./fla_hit.js";
+import { THEME } from "./fla_theme.js";
+import { drawRoundedRect, drawToggle, toggleWidth } from "./fla_lora_ui.js";
 
 const NODE_NAME = "SN1000Resolution";
 const ROW_HEIGHT = 22;
@@ -99,50 +101,13 @@ function hide(widget) {
     if (widget.element) widget.element.style.display = "none";
 }
 
-function drawRoundedRect(ctx, x, y, w, h, fill, stroke) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x, y, Math.max(2, w), h, [h * 0.25]);
-    ctx.fillStyle = fill;
-    ctx.fill();
-    if (stroke) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-    }
-    ctx.restore();
-}
-
-/** 토글 스위치. 클릭 범위 [x, width] 를 돌려준다. */
-function drawToggle(ctx, posX, posY, height, value, live = true) {
-    const radius = height * 0.36;
-    const bgWidth = height * 1.5;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(posX + 4, posY + 4, bgWidth - 8, height - 8, [height * 0.5]);
-    ctx.globalAlpha = 0.25;
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    ctx.fillStyle = (value && live) ? "#89B" : "#888";
-    const knobX = value ? posX + height : posX + height * 0.5;
-    ctx.beginPath();
-    ctx.arc(knobX, posY + height * 0.5, radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    return [posX, bgWidth];
-}
-
 /** ◀ 값 ▶ 묶음. [왼쪽화살표, 숫자, 오른쪽화살표] 의 [x, width] 를 돌려준다. */
 function drawNumber(ctx, leftX, posY, height, text) {
     const midY = posY + height / 2;
     let posX = leftX;
 
     ctx.save();
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+    ctx.fillStyle = THEME.label;
 
     ctx.fill(new Path2D(
         `M ${posX} ${midY} l ${ARROW_W} ${ARROW_H / 2} l 0 -${ARROW_H} L ${posX} ${midY} z`
@@ -152,7 +117,9 @@ function drawNumber(ctx, leftX, posY, height, text) {
 
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.fillStyle = THEME.ink;
     ctx.fillText(text, posX + NUM_W / 2, midY);
+    ctx.fillStyle = THEME.label;
     const num = [posX, NUM_W];
     posX += NUM_W + INNER;
 
@@ -227,9 +194,9 @@ function inlineEdit(node, bounds, rowY, value, onDone) {
         height: `${ROW_HEIGHT * scale}px`,
         fontSize: `${12 * scale}px`,
         textAlign: "center",
-        background: "#222",
-        color: "#DDD",
-        border: "1px solid #89B",
+        background: THEME.card,
+        color: THEME.ink,
+        border: `1px solid ${THEME.brand}`,
         borderRadius: "4px",
         zIndex: 10000,
         outline: "none",
@@ -369,17 +336,17 @@ app.registerExtension({
 
                     // 왼쪽: 그룹
                     drawRoundedRect(ctx, margin, posY, gW, height,
-                        ...hitColors(this, "group", "#2f4258", "#456781"));
+                        ...hitColors(this, "group", THEME.fill, null));
                     // 오른쪽: 해상도
                     drawRoundedRect(ctx, margin + gW + gap, posY, rW, height,
-                        ...hitColors(this, "name", "#2b3b4a", "#3f5a70"));
+                        ...hitColors(this, "name", THEME.fill, null));
 
                     ctx.save();
                     ctx.textBaseline = "middle";
                     ctx.textAlign = "left";
 
                     const gName = groupW?.value || t("group");
-                    ctx.fillStyle = groupW?.value ? "#bcd4e6" : "#7a8c99";
+                    ctx.fillStyle = groupW?.value ? THEME.label : THEME.faint;
                     ctx.fillText(fitText(ctx, gName, gW - 12), margin + 6, midY);
                     this.bounds.group = [margin, gW];
 
@@ -389,7 +356,7 @@ app.registerExtension({
                         ? full.slice(full.lastIndexOf(" / ") + 3)
                         : (full || t("manual"));
                     const rx = margin + gW + gap;
-                    ctx.fillStyle = full ? (LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD") : "#7a8c99";
+                    ctx.fillStyle = full ? THEME.ink : THEME.faint;
                     ctx.fillText(fitText(ctx, short, rW - 12), rx + 6, midY);
                     this.bounds.name = [rx, rW];
 
@@ -484,14 +451,13 @@ app.registerExtension({
                     const midY = posY + height * 0.5;
                     this.lastY = posY;
 
-                    drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                        "#333a45", "#454e5c");
+                    drawRoundedRect(ctx, margin, posY, width - margin * 2, height, THEME.row);
 
                     ctx.save();
                     ctx.textBaseline = "middle";
 
                     // 오른쪽 끝: 비율 연동 토글
-                    const tW = height * 1.5;
+                    const tW = toggleWidth(height);
                     const tX = width - margin - inner - tW;
                     this.bounds.toggle = drawToggle(ctx, tX, posY, height, isLinked());
 
@@ -504,14 +470,14 @@ app.registerExtension({
                     const usable = tX - margin - 6;
                     const half = usable / 2;
 
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.faint;
                     ctx.textAlign = "left";
                     ctx.fillText(leftLabel, margin + 8, midY);
                     const [ad, av, ai] = drawNumber(ctx, margin + 24, posY, height, String(getW()));
                     this.bounds.aDec = ad; this.bounds.aVal = av; this.bounds.aInc = ai;
 
                     const rx = margin + half + 12;
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.faint;
                     ctx.fillText(rightLabel, rx, midY);
                     const [bd, bv, bi] = drawNumber(ctx, rx + 16, posY, height, String(getH()));
                     this.bounds.bDec = bd; this.bounds.bVal = bv; this.bounds.bInc = bi;
@@ -590,16 +556,14 @@ app.registerExtension({
                     const live = isLinked();
 
                     drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                        ...hitColors(this, "name",
-                            live ? "#2b3b4a" : "#2a2a2a",
-                            live ? "#3f5a70" : "#3a3a3a", live));
+                        ...hitColors(this, "name", live ? THEME.row : THEME.rowOff, null, live));
 
                     ctx.save();
                     if (!live) ctx.globalAlpha = 0.45;
 
                     // 오른쪽 끝: 가로/세로 맞바꾸기.
                     // 토글 표시는 지금이 세로형(H > W)인지를 나타낸다.
-                    const tW = height * 1.5;
+                    const tW = toggleWidth(height);
                     const tX = width - margin - inner - tW;
                     const portrait = getH() > getW();
                     this.bounds.toggle = drawToggle(ctx, tX, posY, height, portrait, live);
@@ -609,7 +573,7 @@ app.registerExtension({
                     const shown = `${r[0]}:${r[1]}`;
                     const nameX = margin + 8;
                     const nameW = Math.max(10, tX - inner * 2 - nameX);
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.ink;
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillText(shown, nameX + nameW / 2, midY);
@@ -689,8 +653,7 @@ app.registerExtension({
                     this.lastY = posY;
 
                     drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                        it.favorite ? "#2f3b2c" : "#2a2a2a",
-                        it.favorite ? "#4a6146" : "#3a3a3a");
+                        it.favorite ? THEME.brandSoft : THEME.row);
 
                     ctx.save();
                     ctx.textBaseline = "middle";
@@ -699,14 +662,14 @@ app.registerExtension({
                     const favW = 16;
                     const favX = margin + 6;
                     ctx.textAlign = "center";
-                    ctx.fillStyle = hitText(this, "fav", it.favorite ? "#ffd479" : "#666");
+                    ctx.fillStyle = hitText(this, "fav", it.favorite ? THEME.star : THEME.dim);
                     ctx.fillText(it.favorite ? "★" : "☆", favX + favW / 2, midY);
                     this.bounds.fav = [favX, favW];
 
                     // 오른쪽 끝: 삭제
                     const delW = 14;
                     const delX = width - margin - inner - delW;
-                    ctx.fillStyle = hitText(this, "del", "#a66");
+                    ctx.fillStyle = hitText(this, "del", THEME.dangerInk);
                     ctx.fillText("✕", delX + delW / 2, midY);
                     this.bounds.del = [delX, delW];
 
@@ -715,19 +678,19 @@ app.registerExtension({
                     const half = avail / 2;
                     const wx = favX + favW + 8;
                     ctx.textAlign = "left";
-                    ctx.fillStyle = "#8a9aa6";
+                    ctx.fillStyle = THEME.faint;
                     ctx.font = "10px Arial";
                     ctx.fillText("W", wx, midY);
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.ink;
                     ctx.font = "12px Arial";
                     ctx.fillText(String(it.w), wx + 14, midY);
                     this.bounds.w = [wx + 14, half - 20];
 
                     const hx = wx + half;
-                    ctx.fillStyle = "#8a9aa6";
+                    ctx.fillStyle = THEME.faint;
                     ctx.font = "10px Arial";
                     ctx.fillText("H", hx, midY);
-                    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR ?? "#DDD";
+                    ctx.fillStyle = THEME.ink;
                     ctx.font = "12px Arial";
                     ctx.fillText(String(it.h), hx + 14, midY);
                     this.bounds.h = [hx + 14, half - 20];
@@ -784,12 +747,12 @@ app.registerExtension({
                     const margin = 10;
                     const width = node.size?.[0] ?? widgetWidth;
                     ctx.save();
-                    ctx.fillStyle = "#7a8c99";
+                    ctx.fillStyle = THEME.faint;
                     ctx.font = "10px Arial";
                     ctx.textAlign = "left";
                     ctx.textBaseline = "middle";
                     ctx.fillText(group, margin + 6, posY + height * 0.5);
-                    ctx.strokeStyle = "#3a4550";
+                    ctx.strokeStyle = THEME.rule;
                     ctx.beginPath();
                     const tx = margin + 12 + ctx.measureText(group).width;
                     ctx.moveTo(tx, posY + height * 0.5);
@@ -842,9 +805,9 @@ app.registerExtension({
                     const margin = 10;
                     const width = node.size?.[0] ?? widgetWidth;
                     drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                        ...hitColors(this, "add", "#3a3a2a", "#5a5a3a"));
+                        ...hitColors(this, "add", THEME.fill, null));
                     ctx.save();
-                    ctx.fillStyle = "#d5c98a";
+                    ctx.fillStyle = THEME.brandInk;
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillText(t("addCurrent"), width / 2, posY + height * 0.5);
@@ -884,9 +847,9 @@ app.registerExtension({
                     const margin = 10;
                     const width = node.size?.[0] ?? widgetWidth;
                     drawRoundedRect(ctx, margin, posY, width - margin * 2, height,
-                        ...hitColors(this, "reset", "#3a2a2a", "#5e3a3a"));
+                        ...hitColors(this, "reset", THEME.dangerSoft, null));
                     ctx.save();
-                    ctx.fillStyle = "#e0a0a0";
+                    ctx.fillStyle = THEME.dangerInk;
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillText(t("resetList"), width / 2, posY + height * 0.5);
