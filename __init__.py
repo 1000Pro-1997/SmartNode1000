@@ -24,6 +24,7 @@ from . import workflow_store  # noqa: F401  워크플로우 곁다리 저장소
 from . import huggingface  # noqa: F401  허깅페이스에서 모델 찾기
 from . import imports  # noqa: F401  브라우저로 받은 파일 가져오기
 from . import smart_fill  # noqa: F401  스마트 모델 넣기(찾기·옮기기) 라우트
+from . import updater  # noqa: F401  SM1000 스스로 업데이트하기
 
 # 노드가 늘어나면 여기에 모아서 등록한다.
 NODE_CLASS_MAPPINGS = {**_LORA_NODES, **_RES_NODES, **_CHK_NODES, **_GT_NODES}

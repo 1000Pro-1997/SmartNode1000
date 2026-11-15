@@ -12,7 +12,7 @@
 
 import { app } from "../../scripts/app.js";
 import { t } from "./fla_i18n.js";
-import { el, post } from "./fla_civitai_util.js";
+import { el, json, post } from "./fla_civitai_util.js";
 import { pickLora } from "./fla_lora_picker.js";
 import { pickWildcard } from "./fla_wildcard_picker.js";
 import { openCivitaiPanel } from "./fla_civitai.js";
@@ -82,6 +82,9 @@ function addStyles() {
       .fla-hub-foot button.go{color:#fff;background:#1971c2;border-color:#1971c2}
       .fla-hub-foot button.go:hover:not(:disabled){background:#1c7ed6}
       .fla-hub-foot button.warn:hover:not(:disabled){border-color:#ff8f6b;color:#ffb39b}
+      .fla-hub-foot button.new{color:#0b1f12;background:#51cf66;border-color:#51cf66}
+      .fla-hub-foot button.new:hover:not(:disabled){background:#69db7c;border-color:#69db7c}
+      .fla-hub-foot .ver{flex:none;color:#5f6773;font-size:11px}
       .comfyui-button.fla-hub-btn{color:#fff;background:#1971c2}
       .comfyui-button.fla-hub-btn:hover{background:#1c7ed6}
     `;
@@ -134,10 +137,11 @@ export function openHub() {
     grid.firstChild?.focus();
 }
 
-/** 아래 줄: 안내와 바로가기 단추(받기 관리·새로고침·재시작). */
+/** 아래 줄: 안내와 바로가기 단추(업데이트·받기 관리·새로고침·재시작). */
 function buildFooter(shut) {
     const foot = el("div", "fla-hub-foot");
     const tip = el("span", "tip", t("hubTip"));
+    const version = el("span", "ver");
 
     const button = (icon, label, tone = "") => {
         const b = el("button", tone);
@@ -147,33 +151,69 @@ function buildFooter(shut) {
         b.append(i, document.createTextNode(label));
         return b;
     };
+    const update = button("pi pi-arrow-circle-up", t("hubUpdate"), "new");
     const download = button("pi pi-download", t("hubDownloads"), "go");
     const reload = button("pi pi-refresh", t("hubReload"));
     const restart = button("pi pi-power-off", t("hubRestart"), "warn");
+    const all = [update, download, reload, restart];
+    update.style.display = "none";
     reload.title = t("hubReloadWhy");
     restart.title = t("hubRestartWhy");
 
-    download.onclick = () => { shut(); openCivitaiPanel(null, "loras", null, "downloads"); };
-    reload.onclick = () => location.reload();
-    restart.onclick = async () => {
-        if (!confirm(t("hubRestartConfirm"))) return;
-        for (const b of [download, reload, restart]) b.disabled = true;
-        tip.textContent = t("hubRestarting");
+    const busy = (text) => {
+        for (const b of all) b.disabled = true;
+        tip.textContent = text;
+    };
+    const idle = (error) => {
+        for (const b of all) b.disabled = false;
+        tip.textContent = t("hubTip");
+        if (error) toast(error);
+    };
+
+    /** 서버를 다시 띄우고, 돌아오면 화면도 새로 받는다(새 노드·바뀐 스크립트가 들어오게). */
+    const restartNow = async () => {
+        busy(t("hubRestarting"));
         try {
             const { ok, data } = await post("/fla/restart");
             if (!ok || !data?.ok) throw new Error(data?.error ?? "");
         } catch (e) {
-            for (const b of [download, reload, restart]) b.disabled = false;
-            tip.textContent = t("hubTip");
-            toast(t("hubRestartFail") + (e.message || ""));
+            idle(t("hubRestartFail") + (e.message || ""));
             return;
         }
-        // 내려갔다가 다시 올라오면 화면도 새로 받는다(새 노드·바뀐 스크립트가 들어오게)
         await waitForRestart();
         location.reload();
     };
 
-    foot.append(tip, download, reload, restart);
+    download.onclick = () => { shut(); openCivitaiPanel(null, "loras", null, "downloads"); };
+    reload.onclick = () => location.reload();
+    restart.onclick = () => { if (confirm(t("hubRestartConfirm"))) restartNow(); };
+
+    // 새 판이 있는지 묻는다. 허브를 여는 데 기다리지 않게 뒤에서 한다.
+    let latest = "";
+    json("/fla/update/check").then(({ data }) => {
+        if (data?.current) version.textContent = `v${data.current}`;
+        if (!data?.ok || !data.available) return;
+        latest = data.latest;
+        update.lastChild.textContent = t("hubUpdate") + ` v${latest}`;
+        update.title = t("hubUpdateWhy").replace("{from}", data.current).replace("{to}", latest);
+        update.style.display = "";
+    }).catch(() => { /* 오프라인이면 단추를 안 보일 뿐이다 */ });
+
+    update.onclick = async () => {
+        if (!confirm(t("hubUpdateConfirm").replace("{to}", latest))) return;
+        busy(t("hubUpdating"));
+        try {
+            const { ok, data } = await post("/fla/update/apply");
+            if (!ok || !data?.ok) throw new Error(data?.error ?? "");
+        } catch (e) {
+            idle(t("hubUpdateFail") + (e.message || ""));
+            return;
+        }
+        // 바꾼 코드는 다시 띄워야 읽힌다
+        await restartNow();
+    };
+
+    foot.append(tip, version, update, download, reload, restart);
     return foot;
 }
 

@@ -478,6 +478,15 @@ The files it writes are the ordinary sidecars that sit next to each LoRA
 (`<lora>.metadata.json`, `<lora>.preview.*.node`), so a library some other tool filled in
 already works on first run, and nothing SmartNode1000 fetches is locked inside it.
 
+### Updating
+
+Open the **SM1000** hub from the top bar. When a newer version is on the Comfy Registry,
+an **Update** button appears in the bottom row; press it and SmartNode1000 installs the
+new version and restarts ComfyUI. A git clone is updated with `git pull --ff-only` (it
+stops and tells you if your own edits are in the way); a Registry/Manager install gets the
+new package unpacked over it, keeping your `resolutions.json`, settings, favourites and
+presets.
+
 ---
 
 ## Usage

@@ -1,7 +1,7 @@
 [project]
 name = "fastloramaster"
 description = "Pair prompts with their LoRAs on the canvas, then manage the rest from one panel — LoRAs, checkpoints, workflows and wildcards, with Civitai and Hugging Face search, server-side downloads, update checks, and a three-way merge that upgrades a workflow without losing your edits."
-version = "1.6.0"
+version = "1.6.1"
 license = "MIT"
 
 # classifiers = [
